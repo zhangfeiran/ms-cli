@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/vigo999/ms-cli/agent/loop"
@@ -147,6 +148,74 @@ func TestRunAddsFormatErrorWhenToolCallMissing(t *testing.T) {
 	}
 	if secondCall[len(secondCall)-1].Content == "" {
 		t.Fatalf("expected format error feedback in second call")
+	}
+}
+
+func TestRunGeneratesToolCallIDAndAppendsObservationFallback(t *testing.T) {
+	t.Setenv("MSCLI_AGENT_STEP_LIMIT", "4")
+	t.Setenv("MSCLI_TRAJECTORY_PATH", filepath.Join(t.TempDir(), "trajectory.json"))
+	t.Setenv("MSCLI_TEXT_OBSERVATION_FALLBACK", "true")
+
+	fakeModel := &stubLLM{
+		replies: []ModelReply{
+			{
+				Content: "Run pwd first.",
+				ToolCalls: []ToolCall{
+					{Name: "bash", Arguments: `{"command":"pwd"}`}, // no ID from model
+				},
+			},
+			{
+				Content: "Submit now.",
+				ToolCalls: []ToolCall{
+					{ID: "call_2", Name: "bash", Arguments: `{"command":"submit"}`},
+				},
+			},
+		},
+	}
+	fakeShell := &stubShell{
+		results: map[string]shell.Result{
+			"pwd": {
+				Output:     "/repo\n",
+				ReturnCode: 0,
+			},
+			"submit": {
+				Output:     "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\nok\n",
+				ReturnCode: 0,
+			},
+		},
+	}
+
+	SetLLMClient(fakeModel)
+	SetShellRunner(fakeShell)
+	t.Cleanup(func() {
+		SetLLMClient(nil)
+		SetShellRunner(shell.Tool{})
+	})
+
+	_, err := runAndCollectEvents(loop.Task{Description: "fix it"})
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+
+	if len(fakeModel.calls) < 2 {
+		t.Fatalf("expected at least 2 model calls, got %d", len(fakeModel.calls))
+	}
+	secondCall := fakeModel.calls[1]
+	foundToolObs := false
+	foundUserFallback := false
+	for _, msg := range secondCall {
+		if msg.Role == "tool" && msg.ToolCallID != "" && strings.Contains(msg.Content, `"returncode"`) {
+			foundToolObs = true
+		}
+		if msg.Role == "user" && strings.Contains(msg.Content, "Observation:") {
+			foundUserFallback = true
+		}
+	}
+	if !foundToolObs {
+		t.Fatalf("expected tool observation with generated tool_call_id in second model call")
+	}
+	if !foundUserFallback {
+		t.Fatalf("expected user observation fallback in second model call")
 	}
 }
 

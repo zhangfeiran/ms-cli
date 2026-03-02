@@ -200,6 +200,14 @@ func (a App) handleEvent(ev model.Event) (tea.Model, tea.Cmd) {
 			Content:  ev.Message,
 		})
 
+	case model.ToolPrompt:
+		a.state = a.state.WithMessage(model.Message{
+			Kind:     model.MsgTool,
+			ToolName: "Prompt",
+			Display:  model.DisplayExpanded,
+			Content:  ev.Message,
+		})
+
 	case model.ToolError:
 		a.state = a.state.WithMessage(model.Message{
 			Kind:     model.MsgTool,

@@ -18,7 +18,7 @@ type ModelInfo struct {
 type MessageKind int
 
 const (
-	MsgUser     MessageKind = iota
+	MsgUser MessageKind = iota
 	MsgAgent
 	MsgThinking
 	MsgTool
@@ -59,6 +59,7 @@ const (
 	ToolGlob      EventType = "ToolGlob"
 	ToolEdit      EventType = "ToolEdit"
 	ToolWrite     EventType = "ToolWrite"
+	ToolPrompt    EventType = "ToolPrompt"
 	ToolError     EventType = "ToolError"
 	Done          EventType = "Done"
 )

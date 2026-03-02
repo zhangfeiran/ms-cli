@@ -324,7 +324,7 @@ type chatCompletionRequest struct {
 
 type chatMessageRequest struct {
 	Role       string                `json:"role"`
-	Content    string                `json:"content,omitempty"`
+	Content    string                `json:"content"`
 	ToolCallID string                `json:"tool_call_id,omitempty"`
 	ToolCalls  []chatToolCallRequest `json:"tool_calls,omitempty"`
 }

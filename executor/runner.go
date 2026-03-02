@@ -31,6 +31,7 @@ const (
 	eventCmdOutput     = "cmd_output"
 	eventCmdFinished   = "cmd_finished"
 	eventToolError     = "tool_error"
+	eventDebugPrompt   = "debug_prompt"
 )
 
 var systemPrompt = "You are a coding agent. Use bash tool calls to inspect/edit/test the codebase."
@@ -216,6 +217,12 @@ func Run(task loop.Task, emit func(loop.Event)) (runErr error) {
 		stepIndex := len(traj.Steps) - 1
 
 		emitEvent(emit, loop.Event{Type: eventAgentThinking})
+		if envBool("MSCLI_DEBUG_PROMPT", true) {
+			emitEvent(emit, loop.Event{
+				Type:    eventDebugPrompt,
+				Message: renderPromptForDebug(step, messages, tools),
+			})
+		}
 
 		llmCtx, cancel := context.WithTimeout(context.Background(), time.Duration(envInt("MSCLI_LLM_TIMEOUT_SECONDS", defaultLLMTimeoutSeconds))*time.Second)
 		reply, err := llmClient.Chat(llmCtx, messages, tools)
@@ -226,6 +233,8 @@ func Run(task loop.Task, emit func(loop.Event)) (runErr error) {
 			traj.ExitStatus = "llm_error"
 			return fmt.Errorf("llm chat failed at step %d: %w", step, err)
 		}
+
+		reply.ToolCalls = normalizeToolCalls(step, reply.ToolCalls)
 
 		content := strings.TrimSpace(reply.Content)
 		if content != "" {
@@ -318,6 +327,15 @@ func Run(task loop.Task, emit func(loop.Event)) (runErr error) {
 			}
 			messages = append(messages, toolMessage)
 			appendTrajectoryMessage(traj, toolMessage)
+			if envBool("MSCLI_TEXT_OBSERVATION_FALLBACK", true) {
+				fallback := Message{
+					Role: "user",
+					Content: "Observation:\n" + toolMessage.Content + "\n\n" +
+						"Continue with the next action.",
+				}
+				messages = append(messages, fallback)
+				appendTrajectoryMessage(traj, fallback)
+			}
 
 			if submitted, submission := detectSubmission(result); submitted {
 				final := strings.TrimSpace(submission)
@@ -534,6 +552,53 @@ func detectSubmission(result shell.Result) (bool, string) {
 		return true, ""
 	}
 	return true, strings.Join(lines[1:], "\n")
+}
+
+func normalizeToolCalls(step int, calls []ToolCall) []ToolCall {
+	if len(calls) == 0 {
+		return nil
+	}
+	out := make([]ToolCall, 0, len(calls))
+	for i, call := range calls {
+		id := strings.TrimSpace(call.ID)
+		if id == "" {
+			id = fmt.Sprintf("call_%d_%d", step, i+1)
+		}
+		out = append(out, ToolCall{
+			ID:        id,
+			Name:      strings.TrimSpace(call.Name),
+			Arguments: strings.TrimSpace(call.Arguments),
+		})
+	}
+	return out
+}
+
+func renderPromptForDebug(step int, messages []Message, tools []ToolSpec) string {
+	payload := map[string]any{
+		"step":     step,
+		"messages": messages,
+		"tools":    tools,
+	}
+	raw, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("step=%d\nprompt_marshal_error=%v", step, err)
+	}
+	return string(raw)
+}
+
+func envBool(key string, defaultValue bool) bool {
+	raw := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	if raw == "" {
+		return defaultValue
+	}
+	switch raw {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return defaultValue
+	}
 }
 
 func envInt(key string, defaultValue int) int {
