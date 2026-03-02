@@ -2,7 +2,7 @@ model:
   provider: openai
   endpoint: http://localhost:4000/v1
   name: ""
-  system_prompt: "You are a pragmatic coding assistant. Answer clearly and briefly."
+  system_prompt: "You are a helpful assistant that can interact with a computer."
   timeout_seconds: 120
 budget:
   max_tokens: 32768

@@ -95,6 +95,11 @@ func mapLoopEventToUI(ev loop.Event) model.Event {
 			Type:    model.ToolPrompt,
 			Message: ev.Message,
 		}
+	case "debug_shell_result":
+		return model.Event{
+			Type:    model.ToolPrompt,
+			Message: "ShellResult\n" + ev.Message,
+		}
 	default:
 		return model.Event{Type: model.AgentReply, Message: ev.Message}
 	}

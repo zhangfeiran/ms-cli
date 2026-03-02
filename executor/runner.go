@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -32,9 +34,12 @@ const (
 	eventCmdFinished   = "cmd_finished"
 	eventToolError     = "tool_error"
 	eventDebugPrompt   = "debug_prompt"
+	eventDebugShell    = "debug_shell_result"
 )
 
-var systemPrompt = "You are a coding agent. Use bash tool calls to inspect/edit/test the codebase."
+var systemPrompt = "You are a helpful assistant that can interact with a computer."
+
+var submitCommandPattern = regexp.MustCompile(`^echo\s+['"]?COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT['"]?\s*$`)
 
 // Message is one conversation message exchanged with the LLM.
 type Message struct {
@@ -128,6 +133,8 @@ type TrajectoryCommand struct {
 	FinishedAt    time.Time `json:"finished_at"`
 	ReturnCode    int       `json:"returncode"`
 	Output        string    `json:"output,omitempty"`
+	Stdout        string    `json:"stdout,omitempty"`
+	Stderr        string    `json:"stderr,omitempty"`
 	ExceptionInfo string    `json:"exception_info,omitempty"`
 }
 
@@ -253,6 +260,29 @@ func Run(task loop.Task, emit func(loop.Event)) (runErr error) {
 		appendTrajectoryMessage(traj, assistantMessage)
 
 		if len(reply.ToolCalls) == 0 {
+			if submitted, submission := detectAssistantSubmission(reply.Content); submitted {
+				final := strings.TrimSpace(submission)
+				if final == "" {
+					final = strings.TrimSpace(strings.ReplaceAll(reply.Content, submitToken, ""))
+				}
+				if final == "" {
+					final = "Task completed."
+				}
+				emitEvent(emit, loop.Event{Type: eventAgentReply, Message: final})
+				traj.Submission = final
+				traj.ExitStatus = "submitted_by_assistant"
+				appendTrajectoryExitMessage(traj)
+				traj.Steps[stepIndex].FinishedAt = time.Now().UTC()
+				return nil
+			}
+			if shouldTreatNoToolReplyAsFinal(content, messages) {
+				traj.Submission = strings.TrimSpace(content)
+				traj.ExitStatus = "submitted_by_assistant"
+				appendTrajectoryExitMessage(traj)
+				traj.Steps[stepIndex].FinishedAt = time.Now().UTC()
+				return nil
+			}
+
 			errMsg := "No tool calls found. Every response must include at least one bash tool call."
 			emitEvent(emit, loop.Event{
 				Type:     eventToolError,
@@ -297,13 +327,28 @@ func Run(task loop.Task, emit func(loop.Event)) (runErr error) {
 			cmdStartedAt := time.Now().UTC()
 			emitEvent(emit, loop.Event{Type: eventCmdStarted, Message: command})
 
-			cmdCtx, cmdCancel := context.WithTimeout(context.Background(), time.Duration(envInt("MSCLI_COMMAND_TIMEOUT_SECONDS", defaultCmdTimeoutSeconds))*time.Second)
-			result := shellRunner.Run(cmdCtx, command)
-			cmdCancel()
-
-			for _, line := range splitOutputLines(result.Output) {
-				emitEvent(emit, loop.Event{Type: eventCmdOutput, Message: line})
+			isSubmit := isSubmitCommand(command)
+			var result shell.Result
+			if isSubmit {
+				result = shell.Result{
+					ReturnCode:    -1,
+					ExceptionInfo: "action was not executed",
+				}
+			} else {
+				cmdCtx, cmdCancel := context.WithTimeout(context.Background(), time.Duration(envInt("MSCLI_COMMAND_TIMEOUT_SECONDS", defaultCmdTimeoutSeconds))*time.Second)
+				result = shellRunner.Run(cmdCtx, command)
+				cmdCancel()
 			}
+			result = normalizeShellResult(result)
+
+			if envBool("MSCLI_DEBUG_SHELL_RESULT", true) {
+				emitEvent(emit, loop.Event{
+					Type:    eventDebugShell,
+					Message: renderShellResultForDebug(command, result),
+				})
+			}
+
+			emitShellOutput(emit, result)
 			if result.ExceptionInfo != "" {
 				emitEvent(emit, loop.Event{Type: eventCmdOutput, Message: result.ExceptionInfo})
 			}
@@ -317,6 +362,8 @@ func Run(task loop.Task, emit func(loop.Event)) (runErr error) {
 				FinishedAt:    cmdFinishedAt,
 				ReturnCode:    result.ReturnCode,
 				Output:        result.Output,
+				Stdout:        result.Stdout,
+				Stderr:        result.Stderr,
 				ExceptionInfo: result.ExceptionInfo,
 			})
 
@@ -327,14 +374,20 @@ func Run(task loop.Task, emit func(loop.Event)) (runErr error) {
 			}
 			messages = append(messages, toolMessage)
 			appendTrajectoryMessage(traj, toolMessage)
-			if envBool("MSCLI_TEXT_OBSERVATION_FALLBACK", true) {
+			if envBool("MSCLI_TEXT_OBSERVATION_FALLBACK", false) {
 				fallback := Message{
-					Role: "user",
-					Content: "Observation:\n" + toolMessage.Content + "\n\n" +
-						"Continue with the next action.",
+					Role:    "user",
+					Content: buildObservationFallbackText(result),
 				}
 				messages = append(messages, fallback)
 				appendTrajectoryMessage(traj, fallback)
+			}
+
+			if isSubmit {
+				traj.ExitStatus = "submitted"
+				appendTrajectoryExitMessage(traj)
+				traj.Steps[stepIndex].FinishedAt = time.Now().UTC()
+				return nil
 			}
 
 			if submitted, submission := detectSubmission(result); submitted {
@@ -346,6 +399,7 @@ func Run(task loop.Task, emit func(loop.Event)) (runErr error) {
 
 				traj.Submission = final
 				traj.ExitStatus = "submitted"
+				appendTrajectoryExitMessage(traj)
 				traj.Steps[stepIndex].FinishedAt = time.Now().UTC()
 				return nil
 			}
@@ -446,11 +500,75 @@ func bashToolSpec() ToolSpec {
 }
 
 func buildTaskPrompt(task string) string {
-	return "Please solve this task: " + task + "\n\n" +
-		"Each response MUST include at least one bash tool call.\n" +
-		"To finish, run exactly:\n" +
-		"echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n" +
-		"Then print the final answer in following lines of stdout."
+	systemInfo := fmt.Sprintf("%s %s %s", runtime.GOOS, runtime.GOARCH, runtime.Version())
+	return fmt.Sprintf(
+		"Please solve this issue: %s\n\n"+
+			"You can execute bash commands and edit files to implement the necessary changes.\n\n"+
+			"## Recommended Workflow\n\n"+
+			"This workflows should be done step-by-step so that you can iterate on your changes and any possible problems.\n\n"+
+			"1. Analyze the codebase by finding and reading relevant files\n"+
+			"2. Create a script to reproduce the issue\n"+
+			"3. Edit the source code to resolve the issue\n"+
+			"4. Verify your fix works by running your script again\n"+
+			"5. Test edge cases to ensure your fix is robust\n"+
+			"6. Submit your changes and finish your work by issuing the following command: `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`.\n"+
+			"   Do not combine it with any other command. <important>After this command, you cannot continue working on this task.</important>\n\n"+
+			"## Command Execution Rules\n\n"+
+			"You are operating in an environment where\n\n"+
+			"1. You issue at least one command\n"+
+			"2. The system executes the command(s) in a subshell\n"+
+			"3. You see the result(s)\n"+
+			"4. You write your next command(s)\n\n"+
+			"Each response should include:\n\n"+
+			"1. **Reasoning text** where you explain your analysis and plan\n"+
+			"2. At least one tool call with your command\n\n"+
+			"**CRITICAL REQUIREMENTS:**\n\n"+
+			"- Your response SHOULD include reasoning text explaining what you're doing\n"+
+			"- Your response MUST include AT LEAST ONE bash tool call\n"+
+			"- Directory or environment variable changes are not persistent. Every action is executed in a new subshell.\n"+
+			"- However, you can prefix any action with `MY_ENV_VAR=MY_VALUE cd /path/to/working/dir && ...` or write/load environment variables from files\n"+
+			"- Submit your changes and finish your work by issuing the following command: `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`.\n"+
+			"  Do not combine it with any other command. <important>After this command, you cannot continue working on this task.</important>\n\n"+
+			"Example of a CORRECT response:\n"+
+			"<example_response>\n"+
+			"I need to understand the structure of the repository first. Let me check what files are in the current directory to get a better understanding of the codebase.\n\n"+
+			"[Makes bash tool call with {\"command\": \"ls -la\"} as arguments]\n"+
+			"</example_response>\n\n"+
+			"<system_information>\n"+
+			"%s\n"+
+			"</system_information>\n\n"+
+			"## Useful command examples\n\n"+
+			"### Create a new file:\n\n"+
+			"```bash\n"+
+			"cat <<'EOF' > newfile.py\n"+
+			"import numpy as np\n"+
+			"hello = \"world\"\n"+
+			"print(hello)\n"+
+			"EOF\n"+
+			"```\n\n"+
+			"### Edit files with sed:\n\n"+
+			"```bash\n"+
+			"# Replace all occurrences\n"+
+			"sed -i 's/old_string/new_string/g' filename.py\n\n"+
+			"# Replace only first occurrence\n"+
+			"sed -i 's/old_string/new_string/' filename.py\n\n"+
+			"# Replace first occurrence on line 1\n"+
+			"sed -i '1s/old_string/new_string/' filename.py\n\n"+
+			"# Replace all occurrences in lines 1-10\n"+
+			"sed -i '1,10s/old_string/new_string/g' filename.py\n"+
+			"```\n\n"+
+			"### View file content:\n\n"+
+			"```bash\n"+
+			"# View specific lines with numbers\n"+
+			"nl -ba filename.py | sed -n '10,20p'\n"+
+			"```\n\n"+
+			"### Any other command you want to run\n\n"+
+			"```bash\n"+
+			"anything\n"+
+			"```\n",
+		task,
+		systemInfo,
+	)
 }
 
 func buildFormatError(err string) string {
@@ -488,18 +606,15 @@ func parseCommandFromToolCall(call ToolCall) (string, error) {
 }
 
 func formatObservation(result shell.Result) string {
-	output := result.Output
+	stdout := truncateObservationText(result.Stdout)
+	stderr := truncateObservationText(result.Stderr)
+	output := truncateObservationText(result.Output)
+
 	msg := map[string]any{
 		"returncode": result.ReturnCode,
-	}
-
-	if len(output) <= maxObservationOutputChars {
-		msg["output"] = output
-	} else {
-		msg["output_head"] = output[:maxObservationOutputChars/2]
-		msg["output_tail"] = output[len(output)-maxObservationOutputChars/2:]
-		msg["elided_chars"] = len(output) - maxObservationOutputChars
-		msg["warning"] = "Output too long."
+		"stdout":     stdout,
+		"stderr":     stderr,
+		"output":     output,
 	}
 	if result.ExceptionInfo != "" {
 		msg["exception_info"] = result.ExceptionInfo
@@ -539,7 +654,11 @@ func detectSubmission(result shell.Result) (bool, string) {
 	if result.ReturnCode != 0 {
 		return false, ""
 	}
-	trimmed := strings.TrimLeft(result.Output, " \t\r\n")
+	submissionSource := result.Stdout
+	if strings.TrimSpace(submissionSource) == "" {
+		submissionSource = result.Output
+	}
+	trimmed := strings.TrimLeft(submissionSource, " \t\r\n")
 	if trimmed == "" {
 		return false, ""
 	}
@@ -552,6 +671,139 @@ func detectSubmission(result shell.Result) (bool, string) {
 		return true, ""
 	}
 	return true, strings.Join(lines[1:], "\n")
+}
+
+func detectAssistantSubmission(content string) (bool, string) {
+	raw := strings.TrimSpace(content)
+	if raw == "" {
+		return false, ""
+	}
+	if !strings.Contains(raw, submitToken) {
+		return false, ""
+	}
+
+	idx := strings.Index(raw, submitToken)
+	tail := strings.TrimSpace(raw[idx+len(submitToken):])
+	tail = strings.TrimLeft(tail, "\n\r:：- ")
+	return true, strings.TrimSpace(tail)
+}
+
+func shouldTreatNoToolReplyAsFinal(content string, messages []Message) bool {
+	if strings.TrimSpace(content) == "" {
+		return false
+	}
+	if len(messages) == 0 {
+		return false
+	}
+	lastIdx := len(messages) - 1
+	if messages[lastIdx].Role == "assistant" {
+		lastIdx--
+	}
+	if lastIdx < 0 {
+		return false
+	}
+	last := messages[lastIdx]
+	if last.Role != "tool" {
+		return false
+	}
+	lower := strings.ToLower(content)
+	if strings.Contains(lower, "let me") && strings.Contains(lower, "command") {
+		return false
+	}
+	if strings.Contains(lower, "i will") && strings.Contains(lower, "execute") {
+		return false
+	}
+	return true
+}
+
+func isSubmitCommand(command string) bool {
+	return submitCommandPattern.MatchString(strings.TrimSpace(command))
+}
+
+func normalizeShellResult(result shell.Result) shell.Result {
+	if result.Stdout == "" && result.Stderr == "" && result.Output != "" {
+		result.Stdout = result.Output
+	}
+	if result.Output == "" {
+		result.Output = combineOutputs(result.Stdout, result.Stderr)
+	}
+	return result
+}
+
+func emitShellOutput(emit func(loop.Event), result shell.Result) {
+	hasOutput := false
+	for _, line := range splitOutputLines(result.Stdout) {
+		hasOutput = true
+		emitEvent(emit, loop.Event{Type: eventCmdOutput, Message: line})
+	}
+	for _, line := range splitOutputLines(result.Stderr) {
+		hasOutput = true
+		emitEvent(emit, loop.Event{Type: eventCmdOutput, Message: "stderr: " + line})
+	}
+	if strings.TrimSpace(result.Stdout) == "" && strings.TrimSpace(result.Stderr) == "" && strings.TrimSpace(result.Output) != "" {
+		for _, line := range splitOutputLines(result.Output) {
+			hasOutput = true
+			emitEvent(emit, loop.Event{Type: eventCmdOutput, Message: line})
+		}
+	}
+	if !hasOutput {
+		emitEvent(emit, loop.Event{Type: eventCmdOutput, Message: "<no stdout/stderr output>"})
+	}
+}
+
+func truncateObservationText(s string) string {
+	if len(s) <= maxObservationOutputChars {
+		return s
+	}
+	head := s[:maxObservationOutputChars/2]
+	tail := s[len(s)-maxObservationOutputChars/2:]
+	return head + "\n... output truncated ...\n" + tail
+}
+
+func buildObservationFallbackText(result shell.Result) string {
+	stdout := truncateObservationText(result.Stdout)
+	stderr := truncateObservationText(result.Stderr)
+	if strings.TrimSpace(stdout) == "" {
+		stdout = "<empty>"
+	}
+	if strings.TrimSpace(stderr) == "" {
+		stderr = "<empty>"
+	}
+	return fmt.Sprintf(
+		"Observation:\nreturncode: %d\nstdout:\n%s\n\nstderr:\n%s\n\nContinue with the next action.",
+		result.ReturnCode,
+		stdout,
+		stderr,
+	)
+}
+
+func renderShellResultForDebug(command string, result shell.Result) string {
+	payload := map[string]any{
+		"command":        command,
+		"returncode":     result.ReturnCode,
+		"stdout_len":     len(result.Stdout),
+		"stderr_len":     len(result.Stderr),
+		"output_len":     len(result.Output),
+		"stdout_preview": truncateObservationText(result.Stdout),
+		"stderr_preview": truncateObservationText(result.Stderr),
+		"output_preview": truncateObservationText(result.Output),
+		"exception_info": result.ExceptionInfo,
+	}
+	raw, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("shell_result_debug_marshal_error=%v", err)
+	}
+	return string(raw)
+}
+
+func combineOutputs(stdout, stderr string) string {
+	if stdout == "" {
+		return stderr
+	}
+	if stderr == "" {
+		return stdout
+	}
+	return stdout + "\n" + stderr
 }
 
 func normalizeToolCalls(step int, calls []ToolCall) []ToolCall {
@@ -571,6 +823,13 @@ func normalizeToolCalls(step int, calls []ToolCall) []ToolCall {
 		})
 	}
 	return out
+}
+
+func appendTrajectoryExitMessage(traj *Trajectory) {
+	traj.Messages = append(traj.Messages, TrajectoryMessage{
+		Role:    "exit",
+		Content: "",
+	})
 }
 
 func renderPromptForDebug(step int, messages []Message, tools []ToolSpec) string {

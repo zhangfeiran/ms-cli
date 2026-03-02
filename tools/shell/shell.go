@@ -12,6 +12,8 @@ import (
 // Result is the standardized output of one shell execution.
 type Result struct {
 	Output        string
+	Stdout        string
+	Stderr        string
 	ReturnCode    int
 	ExceptionInfo string
 }
@@ -23,22 +25,31 @@ type Tool struct {
 	Env map[string]string
 }
 
-// Run executes one command in `bash -lc`.
+// Run executes one command in `bash -c`.
+// We intentionally avoid `-l` to prevent user profile/login scripts from
+// muting or altering stdout/stderr in non-interactive runs.
 func (t Tool) Run(ctx context.Context, command string) Result {
-	cmd := exec.CommandContext(ctx, "bash", "-lc", command)
+	cmd := exec.CommandContext(ctx, "bash", "-c", command)
 	if t.Cwd != "" {
 		cmd.Dir = t.Cwd
 	}
 	cmd.Env = mergeEnv(os.Environ(), t.Env)
 
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
+		stdoutText := stdout.String()
+		stderrText := stderr.String()
+		combined := combineOutputs(stdoutText, stderrText)
+
 		if ctx.Err() != nil {
 			return Result{
-				Output:        out.String(),
+				Output:        combined,
+				Stdout:        stdoutText,
+				Stderr:        stderrText,
 				ReturnCode:    -1,
 				ExceptionInfo: fmt.Sprintf("command timed out or canceled: %v", ctx.Err()),
 			}
@@ -46,21 +57,30 @@ func (t Tool) Run(ctx context.Context, command string) Result {
 
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return Result{
-				Output:        out.String(),
+				Output:        combined,
+				Stdout:        stdoutText,
+				Stderr:        stderrText,
 				ReturnCode:    exitErr.ExitCode(),
 				ExceptionInfo: "",
 			}
 		}
 
 		return Result{
-			Output:        out.String(),
+			Output:        combined,
+			Stdout:        stdoutText,
+			Stderr:        stderrText,
 			ReturnCode:    -1,
 			ExceptionInfo: fmt.Sprintf("failed to execute command: %v", err),
 		}
 	}
 
+	stdoutText := stdout.String()
+	stderrText := stderr.String()
+
 	return Result{
-		Output:        out.String(),
+		Output:        combineOutputs(stdoutText, stderrText),
+		Stdout:        stdoutText,
+		Stderr:        stderrText,
 		ReturnCode:    0,
 		ExceptionInfo: "",
 	}
@@ -85,4 +105,14 @@ func mergeEnv(base []string, extra map[string]string) []string {
 	}
 
 	return env
+}
+
+func combineOutputs(stdout, stderr string) string {
+	if stdout == "" {
+		return stderr
+	}
+	if stderr == "" {
+		return stdout
+	}
+	return stdout + "\n" + stderr
 }
