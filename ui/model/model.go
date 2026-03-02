@@ -60,6 +60,8 @@ const (
 	ToolEdit      EventType = "ToolEdit"
 	ToolWrite     EventType = "ToolWrite"
 	ToolError     EventType = "ToolError"
+	ClearScreen   EventType = "ClearScreen"
+	ModelUpdate   EventType = "ModelUpdate"
 	Done          EventType = "Done"
 )
 
@@ -88,12 +90,15 @@ type State struct {
 }
 
 // NewState returns an initial empty state.
-func NewState(version, workDir, repoURL string) State {
+func NewState(version, workDir, repoURL, modelName string) State {
+	if modelName == "" {
+		modelName = "unknown"
+	}
 	return State{
 		Version: version,
 		Tasks:   []TaskInfo{},
 		Model: ModelInfo{
-			Name:   "deepseek-r1",
+			Name:   modelName,
 			CtxMax: 128000,
 		},
 		WorkDir: workDir,

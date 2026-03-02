@@ -23,8 +23,10 @@ func (a *Application) Run() error {
 // channel, dispatches to the engine, and sends resulting events back.
 func (a *Application) runReal() error {
 	userCh := make(chan string, 8)
-	tui := ui.New(a.EventCh, userCh, Version, a.WorkDir, a.RepoURL)
-	p := tea.NewProgram(tui, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	tui := ui.New(a.EventCh, userCh, Version, a.WorkDir, a.RepoURL, a.Config.Model.Model)
+	// Note: tea.WithMouseCellMotion() is intentionally not used to allow
+	// terminal mouse selection and copy functionality
+	p := tea.NewProgram(tui, tea.WithAltScreen())
 
 	go a.inputLoop(userCh)
 
@@ -55,10 +57,21 @@ func (a *Application) processInput(input string) {
 		return
 	}
 
-	// Free-form: send to engine
+	// Free-form: send to engine in a goroutine
+	go a.runTask(trimmed)
+}
+
+// runTask runs a task through the engine and sends events to UI.
+func (a *Application) runTask(description string) {
+	// Send thinking event
 	a.EventCh <- model.Event{Type: model.AgentThinking}
 
-	events, err := a.Engine.Run(loop.Task{Description: trimmed})
+	task := loop.Task{
+		ID:          generateTaskID(),
+		Description: description,
+	}
+
+	events, err := a.Engine.Run(task)
 	if err != nil {
 		a.EventCh <- model.Event{
 			Type:     model.ToolError,
@@ -68,20 +81,129 @@ func (a *Application) processInput(input string) {
 		return
 	}
 
+	// Convert loop events to UI events
 	for _, ev := range events {
-		a.EventCh <- model.Event{
+		uiEvent := a.convertEvent(ev)
+		if uiEvent != nil {
+			a.EventCh <- *uiEvent
+		}
+	}
+}
+
+// convertEvent converts a loop event to a UI event.
+func (a *Application) convertEvent(ev loop.Event) *model.Event {
+	switch ev.Type {
+	case loop.EventAgentReply:
+		return &model.Event{
 			Type:    model.AgentReply,
 			Message: ev.Message,
 		}
+
+	case loop.EventAgentThinking:
+		return &model.Event{
+			Type: model.AgentThinking,
+		}
+
+	case loop.EventToolRead:
+		return &model.Event{
+			Type:     model.ToolRead,
+			Message:  ev.Message,
+			ToolName: ev.ToolName,
+			Summary:  ev.Summary,
+		}
+
+	case loop.EventToolGrep:
+		return &model.Event{
+			Type:     model.ToolGrep,
+			Message:  ev.Message,
+			ToolName: ev.ToolName,
+			Summary:  ev.Summary,
+		}
+
+	case loop.EventToolGlob:
+		return &model.Event{
+			Type:     model.ToolGlob,
+			Message:  ev.Message,
+			ToolName: ev.ToolName,
+			Summary:  ev.Summary,
+		}
+
+	case loop.EventToolEdit:
+		return &model.Event{
+			Type:     model.ToolEdit,
+			Message:  ev.Message,
+			ToolName: ev.ToolName,
+		}
+
+	case loop.EventToolWrite:
+		return &model.Event{
+			Type:     model.ToolWrite,
+			Message:  ev.Message,
+			ToolName: ev.ToolName,
+		}
+
+	case loop.EventToolError:
+		return &model.Event{
+			Type:     model.ToolError,
+			Message:  ev.Message,
+			ToolName: ev.ToolName,
+		}
+
+	case loop.EventCmdStarted:
+		return &model.Event{
+			Type:    model.CmdStarted,
+			Message: ev.Message,
+		}
+
+	case loop.EventAnalysisReady:
+		return &model.Event{
+			Type:    model.AnalysisReady,
+			Message: ev.Message,
+		}
+
+	case loop.EventTokenUpdate:
+		return &model.Event{
+			Type:       model.TokenUpdate,
+			CtxUsed:    ev.CtxUsed,
+			TokensUsed: ev.TokensUsed,
+		}
+
+	case loop.EventTaskCompleted:
+		// Task completed, no specific UI event needed
+		return nil
+
+	case loop.EventTaskFailed:
+		return &model.Event{
+			Type:     model.ToolError,
+			ToolName: "Task",
+			Message:  ev.Message,
+		}
+
+	default:
+		// Map other events to AgentReply
+		if ev.Message != "" {
+			return &model.Event{
+				Type:    model.AgentReply,
+				Message: ev.Message,
+			}
+		}
+		return nil
 	}
+}
+
+// generateTaskID generates a unique task ID.
+func generateTaskID() string {
+	return time.Now().Format("20060102-150405-000")
 }
 
 // runDemo starts the TUI with fake events for preview/testing.
 func (a *Application) runDemo() error {
 	go a.fakeAgentLoop()
 
-	tui := ui.New(a.EventCh, nil, Version, a.WorkDir, a.RepoURL)
-	p := tea.NewProgram(tui, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	tui := ui.New(a.EventCh, nil, Version, a.WorkDir, a.RepoURL, "demo-model")
+	// Note: tea.WithMouseCellMotion() is intentionally not used to allow
+	// terminal mouse selection and copy functionality
+	p := tea.NewProgram(tui, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }

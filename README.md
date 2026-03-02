@@ -30,14 +30,45 @@ go run ./app
 ./ms-cli
 ```
 
+### Command-Line Options
+
+```bash
+# Select provider and model
+./ms-cli --provider openai --model gpt-4o
+./ms-cli --provider openrouter --model anthropic/claude-3.5-sonnet
+
+# Use custom config file
+./ms-cli --config /path/to/config.yaml
+
+# Set API key directly
+./ms-cli --provider openai --api-key sk-xxx
+```
+
 ## Commands
 
 In TUI input, use slash commands:
 
+### Project Commands
 - `/roadmap status [path]` (default: `roadmap.yaml`)
 - `/weekly status [path]` (default: `weekly.md`)
 
+### Model & Provider Commands
+- `/model` - Show current model configuration
+- `/model <model-name>` - Switch to a new model (keep current provider)
+- `/model <provider>:<model>` - Switch both provider and model (e.g., `/model openrouter:anthropic/claude-3-opus`)
+- `/provider <name>` - Switch provider (`openai` or `openrouter`)
+
+### Session Commands
+- `/compact` - Compact conversation context to save tokens
+- `/clear` - Clear chat history
+- `/exit` - Exit the application
+- `/help` - Show available commands
+
 Any non-slash input is treated as a normal task prompt and routed to the engine.
+
+### Slash Command Autocomplete
+
+Type `/` to see available slash commands. Use `↑`/`↓` keys to navigate and `Tab` or `Enter` to select.
 
 ## Keybindings
 
@@ -45,8 +76,10 @@ Any non-slash input is treated as a normal task prompt and routed to the engine.
 |-----|--------|
 | `enter` | Send input |
 | `pgup` / `pgdn` | Scroll chat |
-| `up` / `down` | Scroll chat |
+| `up` / `down` | Scroll chat / Navigate slash suggestions |
 | `home` / `end` | Jump to top / bottom |
+| `tab` / `enter` | Accept slash suggestion |
+| `esc` | Cancel slash suggestions |
 | `/` | Start a slash command |
 | `ctrl+c` | Quit |
 
@@ -110,6 +143,39 @@ ms-cli/
 │   └── updates/
 ├── go.mod
 └── README.md
+```
+
+## Configuration
+
+Configuration can be provided via:
+
+1. **Config file** (`mscli.yaml` or `~/.config/mscli/config.yaml`)
+2. **Environment variables**
+3. **Command-line flags** (highest priority)
+
+### Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `MSCLI_PROVIDER` | LLM provider (`openai` or `openrouter`) |
+| `MSCLI_MODEL` | Model name |
+| `MSCLI_API_KEY` | API key |
+| `OPENAI_API_KEY` | OpenAI API key (fallback) |
+| `OPENROUTER_API_KEY` | OpenRouter API key (fallback) |
+
+### Example Config File
+
+```yaml
+model:
+  provider: openrouter
+  model: anthropic/claude-3.5-sonnet
+  temperature: 0.7
+budget:
+  max_tokens: 32768
+  max_cost_usd: 10
+context:
+  max_tokens: 24000
+  compaction_threshold: 0.85
 ```
 
 ## Known Limitations
