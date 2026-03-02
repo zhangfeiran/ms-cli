@@ -56,23 +56,42 @@ func (a *Application) processInput(input string) {
 	}
 
 	// Free-form: send to engine
-	a.EventCh <- model.Event{Type: model.AgentThinking}
-
-	events, err := a.Engine.Run(loop.Task{Description: trimmed})
+	err := a.Engine.RunStream(loop.Task{Description: trimmed}, func(ev loop.Event) {
+		a.EventCh <- mapLoopEventToUI(ev)
+	})
 	if err != nil {
 		a.EventCh <- model.Event{
 			Type:     model.ToolError,
 			ToolName: "Engine",
 			Message:  err.Error(),
 		}
-		return
 	}
+}
 
-	for _, ev := range events {
-		a.EventCh <- model.Event{
-			Type:    model.AgentReply,
-			Message: ev.Message,
+func mapLoopEventToUI(ev loop.Event) model.Event {
+	switch ev.Type {
+	case "agent_thinking":
+		return model.Event{Type: model.AgentThinking}
+	case "agent_reply":
+		return model.Event{Type: model.AgentReply, Message: ev.Message}
+	case "cmd_started":
+		return model.Event{Type: model.CmdStarted, Message: ev.Message}
+	case "cmd_output":
+		return model.Event{Type: model.CmdOutput, Message: ev.Message}
+	case "cmd_finished":
+		return model.Event{Type: model.CmdFinished}
+	case "tool_error":
+		toolName := ev.ToolName
+		if toolName == "" {
+			toolName = "Agent"
 		}
+		return model.Event{
+			Type:     model.ToolError,
+			ToolName: toolName,
+			Message:  ev.Message,
+		}
+	default:
+		return model.Event{Type: model.AgentReply, Message: ev.Message}
 	}
 }
 

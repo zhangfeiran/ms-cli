@@ -30,6 +30,35 @@ go run ./app
 ./ms-cli
 ```
 
+## LLM Configuration
+
+By default, real mode calls an OpenAI-compatible endpoint at `http://localhost:4000/v1`.
+
+Environment variables:
+
+- `OPENAI_API_BASE` (default: `http://localhost:4000/v1`)
+- `OPENAI_API_KEY` (optional for local gateways)
+- `OPENAI_MODEL` (optional; if empty, the first model from `/models` is used)
+
+Example:
+
+```bash
+export OPENAI_API_BASE=http://localhost:4000/v1
+export OPENAI_MODEL=qwen2.5-coder-7b-instruct
+go run ./app
+```
+
+## Runtime Behavior
+
+- Real mode streams agent events while running: each round's `bash` command and command output is shown in the chat panel in real time.
+- Every run saves a trajectory JSON file (default: `trace/last-trajectory.json`).
+
+Optional env vars:
+
+- `MSCLI_TRAJECTORY_PATH` (set custom trajectory file path, or set `off` to disable saving)
+- `MSCLI_AGENT_STEP_LIMIT` (default: `12`)
+- `MSCLI_COMMAND_TIMEOUT_SECONDS` (default: `30`)
+
 ## Commands
 
 In TUI input, use slash commands:
@@ -88,6 +117,7 @@ ms-cli/
 │   └── runner.go               # pluggable task executor
 ├── integrations/
 │   ├── domain/                 # external domain client + schema
+│   ├── llm/openai/             # OpenAI-compatible LLM client
 │   └── skills/                 # skill invocation + repo
 ├── internal/
 │   └── project/
@@ -114,7 +144,7 @@ ms-cli/
 
 ## Known Limitations
 
-- The real-mode engine flow is still minimal/stub-oriented.
+- The minimal agent currently only supports one tool (`bash`) and no permission/approval gate yet.
 - Running Bubble Tea in non-interactive shells may fail with `/dev/tty` errors.
 
 ## Architecture Rule

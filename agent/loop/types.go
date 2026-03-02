@@ -6,6 +6,8 @@ type Task struct {
 }
 
 type Event struct {
-	Type    string
-	Message string
+	Type     string
+	Message  string
+	ToolName string
+	Summary  string
 }
