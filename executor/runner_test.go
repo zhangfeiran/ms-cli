@@ -494,6 +494,69 @@ func TestRunShortCircuitsEchoSubmitCommandLikeMini(t *testing.T) {
 	}
 }
 
+func TestRenderPromptForDebugReadableFormat(t *testing.T) {
+	msgs := []Message{
+		{Role: "system", Content: "system prompt"},
+		{Role: "user", Content: "user prompt"},
+		{
+			Role:    "assistant",
+			Content: "assistant reply",
+			ToolCalls: []ToolCall{
+				{ID: "call_1", Name: "bash", Arguments: `{"command":"pwd"}`},
+			},
+		},
+	}
+	tools := []ToolSpec{{Name: "bash"}}
+
+	out := renderPromptForDebug(1, msgs, tools)
+	if !strings.Contains(out, "Step 1 Prompt:") {
+		t.Fatalf("missing step header: %q", out)
+	}
+	for _, section := range []string{"System:\n", "User:\n", "Assistant:\n", "Tool Calls:\n", "Available Tools:\n"} {
+		if !strings.Contains(out, section) {
+			t.Fatalf("missing section %q in output: %q", section, out)
+		}
+	}
+	if strings.Contains(out, `"messages"`) || strings.Contains(out, `"tools"`) {
+		t.Fatalf("should not render JSON payload: %q", out)
+	}
+}
+
+func TestEmitShellOutputMiniStyle(t *testing.T) {
+	events := make([]loop.Event, 0, 16)
+	emitShellOutput(func(ev loop.Event) {
+		events = append(events, ev)
+	}, shell.Result{
+		Output:        "39\n",
+		ReturnCode:    0,
+		ExceptionInfo: "action was not executed",
+	})
+
+	got := make([]string, 0, len(events))
+	for _, ev := range events {
+		if ev.Type == eventCmdOutput {
+			got = append(got, ev.Message)
+		}
+	}
+
+	expect := []string{
+		"<returncode>",
+		"0",
+		"<output>",
+		"39",
+		"<exception_info>",
+		"action was not executed",
+	}
+	if len(got) != len(expect) {
+		t.Fatalf("unexpected cmd output event count: got=%d want=%d events=%v", len(got), len(expect), got)
+	}
+	for i := range expect {
+		if got[i] != expect[i] {
+			t.Fatalf("unexpected event[%d]: got=%q want=%q all=%v", i, got[i], expect[i], got)
+		}
+	}
+}
+
 func runAndCollectEvents(task loop.Task) ([]loop.Event, error) {
 	events := make([]loop.Event, 0, 32)
 	err := Run(task, func(ev loop.Event) {

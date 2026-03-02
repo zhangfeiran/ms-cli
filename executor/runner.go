@@ -341,7 +341,7 @@ func Run(task loop.Task, emit func(loop.Event)) (runErr error) {
 			}
 			result = normalizeShellResult(result)
 
-			if envBool("MSCLI_DEBUG_SHELL_RESULT", true) {
+			if envBool("MSCLI_DEBUG_SHELL_RESULT", false) {
 				emitEvent(emit, loop.Event{
 					Type:    eventDebugShell,
 					Message: renderShellResultForDebug(command, result),
@@ -349,9 +349,6 @@ func Run(task loop.Task, emit func(loop.Event)) (runErr error) {
 			}
 
 			emitShellOutput(emit, result)
-			if result.ExceptionInfo != "" {
-				emitEvent(emit, loop.Event{Type: eventCmdOutput, Message: result.ExceptionInfo})
-			}
 			emitEvent(emit, loop.Event{Type: eventCmdFinished})
 
 			cmdFinishedAt := time.Now().UTC()
@@ -731,23 +728,24 @@ func normalizeShellResult(result shell.Result) shell.Result {
 }
 
 func emitShellOutput(emit func(loop.Event), result shell.Result) {
-	hasOutput := false
-	for _, line := range splitOutputLines(result.Stdout) {
-		hasOutput = true
-		emitEvent(emit, loop.Event{Type: eventCmdOutput, Message: line})
-	}
-	for _, line := range splitOutputLines(result.Stderr) {
-		hasOutput = true
-		emitEvent(emit, loop.Event{Type: eventCmdOutput, Message: "stderr: " + line})
-	}
-	if strings.TrimSpace(result.Stdout) == "" && strings.TrimSpace(result.Stderr) == "" && strings.TrimSpace(result.Output) != "" {
-		for _, line := range splitOutputLines(result.Output) {
-			hasOutput = true
+	emitEvent(emit, loop.Event{Type: eventCmdOutput, Message: "<returncode>"})
+	emitEvent(emit, loop.Event{Type: eventCmdOutput, Message: strconv.Itoa(result.ReturnCode)})
+	emitEvent(emit, loop.Event{Type: eventCmdOutput, Message: "<output>"})
+
+	outputLines := splitOutputLines(result.Output)
+	if len(outputLines) == 0 {
+		emitEvent(emit, loop.Event{Type: eventCmdOutput, Message: ""})
+	} else {
+		for _, line := range outputLines {
 			emitEvent(emit, loop.Event{Type: eventCmdOutput, Message: line})
 		}
 	}
-	if !hasOutput {
-		emitEvent(emit, loop.Event{Type: eventCmdOutput, Message: "<no stdout/stderr output>"})
+
+	if result.ExceptionInfo != "" {
+		emitEvent(emit, loop.Event{Type: eventCmdOutput, Message: "<exception_info>"})
+		for _, line := range splitOutputLines(result.ExceptionInfo) {
+			emitEvent(emit, loop.Event{Type: eventCmdOutput, Message: line})
+		}
 	}
 }
 
@@ -778,22 +776,19 @@ func buildObservationFallbackText(result shell.Result) string {
 }
 
 func renderShellResultForDebug(command string, result shell.Result) string {
-	payload := map[string]any{
-		"command":        command,
-		"returncode":     result.ReturnCode,
-		"stdout_len":     len(result.Stdout),
-		"stderr_len":     len(result.Stderr),
-		"output_len":     len(result.Output),
-		"stdout_preview": truncateObservationText(result.Stdout),
-		"stderr_preview": truncateObservationText(result.Stderr),
-		"output_preview": truncateObservationText(result.Output),
-		"exception_info": result.ExceptionInfo,
+	var b strings.Builder
+	b.WriteString("Tool:\n")
+	b.WriteString("<command>\n")
+	b.WriteString(command)
+	b.WriteString("\n<returncode>\n")
+	b.WriteString(strconv.Itoa(result.ReturnCode))
+	b.WriteString("\n<output>\n")
+	b.WriteString(truncateObservationText(result.Output))
+	if result.ExceptionInfo != "" {
+		b.WriteString("\n<exception_info>\n")
+		b.WriteString(truncateObservationText(result.ExceptionInfo))
 	}
-	raw, err := json.MarshalIndent(payload, "", "  ")
-	if err != nil {
-		return fmt.Sprintf("shell_result_debug_marshal_error=%v", err)
-	}
-	return string(raw)
+	return b.String()
 }
 
 func combineOutputs(stdout, stderr string) string {
@@ -833,16 +828,61 @@ func appendTrajectoryExitMessage(traj *Trajectory) {
 }
 
 func renderPromptForDebug(step int, messages []Message, tools []ToolSpec) string {
-	payload := map[string]any{
-		"step":     step,
-		"messages": messages,
-		"tools":    tools,
+	var b strings.Builder
+	fmt.Fprintf(&b, "Step %d Prompt:\n\n", step)
+
+	for _, msg := range messages {
+		fmt.Fprintf(&b, "%s:\n", debugRoleName(msg.Role))
+
+		content := strings.TrimSpace(msg.Content)
+		if content == "" {
+			b.WriteString("<empty>\n")
+		} else {
+			b.WriteString(content)
+			b.WriteString("\n")
+		}
+
+		if len(msg.ToolCalls) > 0 {
+			b.WriteString("\nTool Calls:\n")
+			for _, tc := range msg.ToolCalls {
+				args := strings.TrimSpace(tc.Arguments)
+				if args == "" {
+					args = "{}"
+				}
+				fmt.Fprintf(&b, "- %s %s\n", tc.Name, args)
+			}
+		}
+		b.WriteString("\n")
 	}
-	raw, err := json.MarshalIndent(payload, "", "  ")
-	if err != nil {
-		return fmt.Sprintf("step=%d\nprompt_marshal_error=%v", step, err)
+
+	if len(tools) > 0 {
+		b.WriteString("Available Tools:\n")
+		for _, tool := range tools {
+			fmt.Fprintf(&b, "- %s\n", tool.Name)
+		}
 	}
-	return string(raw)
+
+	return strings.TrimSpace(b.String())
+}
+
+func debugRoleName(role string) string {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "system":
+		return "System"
+	case "user":
+		return "User"
+	case "assistant":
+		return "Assistant"
+	case "tool":
+		return "Tool"
+	case "exit":
+		return "Exit"
+	default:
+		if strings.TrimSpace(role) == "" {
+			return "Unknown"
+		}
+		return role
+	}
 }
 
 func envBool(key string, defaultValue bool) bool {

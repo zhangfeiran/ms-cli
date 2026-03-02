@@ -152,7 +152,7 @@ func (a App) handleEvent(ev model.Event) (tea.Model, tea.Cmd) {
 		})
 
 	case model.CmdOutput:
-		a.state = a.appendToLastTool(ev.Message)
+		a.state = a.appendToLastShellTool(ev.Message)
 
 	case model.CmdFinished:
 		// output already in the tool block
@@ -201,9 +201,13 @@ func (a App) handleEvent(ev model.Event) (tea.Model, tea.Cmd) {
 		})
 
 	case model.ToolPrompt:
+		toolName := ev.ToolName
+		if strings.TrimSpace(toolName) == "" {
+			toolName = "Prompt"
+		}
 		a.state = a.state.WithMessage(model.Message{
 			Kind:     model.MsgTool,
-			ToolName: "Prompt",
+			ToolName: toolName,
 			Display:  model.DisplayExpanded,
 			Content:  ev.Message,
 		})
@@ -253,10 +257,29 @@ func (a App) replaceThinking(m model.Message) model.State {
 	}
 }
 
-func (a App) appendToLastTool(line string) model.State {
+func (a App) appendToLastShellTool(line string) model.State {
 	msgs := make([]model.Message, len(a.state.Messages))
 	copy(msgs, a.state.Messages)
 
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Kind == model.MsgTool && msgs[i].ToolName == "Shell" {
+			msgs[i] = model.Message{
+				Kind:     model.MsgTool,
+				ToolName: msgs[i].ToolName,
+				Display:  msgs[i].Display,
+				Content:  msgs[i].Content + "\n" + line,
+			}
+			return model.State{
+				Version:  a.state.Version,
+				Model:    a.state.Model,
+				Messages: msgs,
+				WorkDir:  a.state.WorkDir,
+				RepoURL:  a.state.RepoURL,
+			}
+		}
+	}
+
+	// Fallback: append to latest tool block if shell block is missing.
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Kind == model.MsgTool {
 			msgs[i] = model.Message{

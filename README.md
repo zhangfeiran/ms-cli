@@ -59,7 +59,7 @@ Optional env vars:
 - `MSCLI_AGENT_STEP_LIMIT` (default: `12`)
 - `MSCLI_COMMAND_TIMEOUT_SECONDS` (default: `30`)
 - `MSCLI_DEBUG_PROMPT` (default: `true`, print full prompt payload for each round)
-- `MSCLI_DEBUG_SHELL_RESULT` (default: `true`, print captured shell result payload each command)
+- `MSCLI_DEBUG_SHELL_RESULT` (default: `false`, print captured shell result payload each command)
 - `MSCLI_TEXT_OBSERVATION_FALLBACK` (default: `false`, append observation as user text for model compatibility)
 
 Observation payload includes `stdout`, `stderr`, `output` and `returncode`.
