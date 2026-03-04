@@ -9,3 +9,6 @@ ms-cli
 
 # Go workspace and cache files
 *.coverprofile
+
+# reference projects
+/reference
