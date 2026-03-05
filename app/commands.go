@@ -235,9 +235,13 @@ func getEnv(key string) string {
 
 // cmdExit handles "/exit".
 func (a *Application) cmdExit() {
+	msg := "Goodbye!"
+	if a.currentSessionID != "" {
+		msg = fmt.Sprintf("Goodbye!\nYou can resume this conversation with: ms-cli resume %s", a.currentSessionID)
+	}
 	a.EventCh <- model.Event{
 		Type:    model.AgentReply,
-		Message: "Goodbye!",
+		Message: msg,
 	}
 	// Send Done event to close the UI
 	go func() {
@@ -268,6 +272,19 @@ func (a *Application) cmdCompact() {
 
 // cmdClear handles "/clear".
 func (a *Application) cmdClear() {
+	if a.ctxManager != nil {
+		a.ctxManager.Clear()
+	}
+	if a.sessionManager != nil {
+		if err := a.sessionManager.ClearCurrentMessages(); err != nil {
+			a.EventCh <- model.Event{
+				Type:     model.ToolError,
+				ToolName: "session",
+				Message:  fmt.Sprintf("failed to clear session messages: %v", err),
+			}
+		}
+	}
+
 	// Clear all messages by sending a special event
 	a.EventCh <- model.Event{
 		Type:    model.ClearScreen,
@@ -370,6 +387,13 @@ func (a *Application) cmdPermission(args []string) {
 	level := permission.ParsePermissionLevel(levelStr)
 
 	permSvc.Grant(tool, level)
+	if err := a.syncSessionRuntime(); err != nil {
+		a.EventCh <- model.Event{
+			Type:     model.ToolError,
+			ToolName: "session",
+			Message:  fmt.Sprintf("Permission updated but failed to sync session runtime: %v", err),
+		}
+	}
 
 	a.EventCh <- model.Event{
 		Type:    model.AgentReply,
@@ -410,6 +434,13 @@ func (a *Application) cmdYolo() {
 		a.EventCh <- model.Event{
 			Type:    model.AgentReply,
 			Message: "⚡ YOLO mode enabled! All operations will be auto-approved. Use with caution!",
+		}
+	}
+	if err := a.syncSessionRuntime(); err != nil {
+		a.EventCh <- model.Event{
+			Type:     model.ToolError,
+			ToolName: "session",
+			Message:  fmt.Sprintf("YOLO updated but failed to sync session runtime: %v", err),
 		}
 	}
 }
