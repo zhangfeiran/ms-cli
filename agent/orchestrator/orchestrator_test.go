@@ -4,20 +4,19 @@ import (
 	"context"
 	"testing"
 
-	"github.com/vigo999/ms-cli/agent/loop"
 	"github.com/vigo999/ms-cli/agent/planner"
 	"github.com/vigo999/ms-cli/integrations/llm"
 )
 
 // mockEngine records calls and returns canned events.
 type mockEngine struct {
-	calls  []loop.Task
-	events []loop.Event
+	calls  []RunRequest
+	events []RunEvent
 	err    error
 }
 
-func (m *mockEngine) RunWithContext(_ context.Context, task loop.Task) ([]loop.Event, error) {
-	m.calls = append(m.calls, task)
+func (m *mockEngine) Run(_ context.Context, req RunRequest) ([]RunEvent, error) {
+	m.calls = append(m.calls, req)
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -36,18 +35,18 @@ func (m *mockProvider) Complete(_ context.Context, _ *llm.CompletionRequest) (*l
 func (m *mockProvider) CompleteStream(_ context.Context, _ *llm.CompletionRequest) (llm.StreamIterator, error) {
 	return nil, nil
 }
-func (m *mockProvider) SupportsTools() bool          { return false }
+func (m *mockProvider) SupportsTools() bool            { return false }
 func (m *mockProvider) AvailableModels() []llm.ModelInfo { return nil }
 
 func TestRun_StandardMode(t *testing.T) {
 	engine := &mockEngine{
-		events: []loop.Event{loop.NewEvent(loop.EventAgentReply, "done")},
+		events: []RunEvent{NewRunEvent(EventAgentReply, "done")},
 	}
 
 	o := New(Config{Mode: ModeStandard}, engine, nil, nil)
 
-	task := loop.Task{ID: "1", Description: "hello"}
-	events, err := o.Run(context.Background(), task)
+	req := RunRequest{ID: "1", Description: "hello"}
+	events, err := o.Run(context.Background(), req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -55,7 +54,7 @@ func TestRun_StandardMode(t *testing.T) {
 		t.Fatalf("expected 1 engine call, got %d", len(engine.calls))
 	}
 	if engine.calls[0].Description != "hello" {
-		t.Errorf("expected task 'hello', got %q", engine.calls[0].Description)
+		t.Errorf("expected request 'hello', got %q", engine.calls[0].Description)
 	}
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
@@ -64,7 +63,7 @@ func TestRun_StandardMode(t *testing.T) {
 
 func TestRun_PlanMode_ViaLoop(t *testing.T) {
 	engine := &mockEngine{
-		events: []loop.Event{loop.NewEvent(loop.EventAgentReply, "step done")},
+		events: []RunEvent{NewRunEvent(EventAgentReply, "step done")},
 	}
 
 	provider := &mockProvider{
@@ -74,13 +73,12 @@ func TestRun_PlanMode_ViaLoop(t *testing.T) {
 
 	o := New(Config{Mode: ModePlan, AvailableTools: []string{"read", "edit"}}, engine, p, nil)
 
-	task := loop.Task{ID: "t1", Description: "fix the bug"}
-	events, err := o.Run(context.Background(), task)
+	req := RunRequest{ID: "t1", Description: "fix the bug"}
+	events, err := o.Run(context.Background(), req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Engine should be called once per step (2 steps)
 	if len(engine.calls) != 2 {
 		t.Fatalf("expected 2 engine calls, got %d", len(engine.calls))
 	}
@@ -91,10 +89,9 @@ func TestRun_PlanMode_ViaLoop(t *testing.T) {
 		t.Errorf("step 1: expected 'Fix bug', got %q", engine.calls[1].Description)
 	}
 
-	// Should have events: thinking, plan created, 2x step events, completed
 	hasCompleted := false
 	for _, ev := range events {
-		if ev.Type == loop.EventTaskCompleted {
+		if ev.Type == EventTaskCompleted {
 			hasCompleted = true
 		}
 	}
@@ -138,7 +135,7 @@ func (c *trackingCallback) OnStepCompleted(_ planner.Step, i int, _ string) erro
 
 func TestPlanMode_Callbacks(t *testing.T) {
 	engine := &mockEngine{
-		events: []loop.Event{loop.NewEvent(loop.EventAgentReply, "ok")},
+		events: []RunEvent{NewRunEvent(EventAgentReply, "ok")},
 	}
 	provider := &mockProvider{
 		content: `[{"description":"step one"},{"description":"step two"}]`,
@@ -149,7 +146,7 @@ func TestPlanMode_Callbacks(t *testing.T) {
 	o := New(Config{Mode: ModePlan}, engine, p, nil)
 	o.SetCallback(cb)
 
-	_, err := o.Run(context.Background(), loop.Task{ID: "t1", Description: "do stuff"})
+	_, err := o.Run(context.Background(), RunRequest{ID: "t1", Description: "do stuff"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

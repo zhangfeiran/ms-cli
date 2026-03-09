@@ -6,13 +6,13 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/vigo999/ms-cli/agent/loop"
 	"github.com/vigo999/ms-cli/agent/planner"
 )
 
-// Engine is the interface for the ReAct loop.
+// Engine is the interface the orchestrator uses to run tasks.
+// Implemented by an adapter over agent/loop in internal/app/wire.go.
 type Engine interface {
-	RunWithContext(ctx context.Context, task loop.Task) ([]loop.Event, error)
+	Run(ctx context.Context, req RunRequest) ([]RunEvent, error)
 }
 
 // WorkflowRunner executes a sequence of plan steps.
@@ -75,33 +75,33 @@ func (o *Orchestrator) CurrentMode() RunMode {
 }
 
 // Run executes a task using the configured mode.
-func (o *Orchestrator) Run(ctx context.Context, task loop.Task) ([]loop.Event, error) {
+func (o *Orchestrator) Run(ctx context.Context, req RunRequest) ([]RunEvent, error) {
 	switch o.config.Mode {
 	case ModePlan:
-		return o.runPlan(ctx, task)
+		return o.runPlan(ctx, req)
 	default:
-		return o.engine.RunWithContext(ctx, task)
+		return o.engine.Run(ctx, req)
 	}
 }
 
 // runPlan generates a plan then executes it step by step.
-func (o *Orchestrator) runPlan(ctx context.Context, task loop.Task) ([]loop.Event, error) {
-	var events []loop.Event
+func (o *Orchestrator) runPlan(ctx context.Context, req RunRequest) ([]RunEvent, error) {
+	var events []RunEvent
 
 	// 1. Generate plan
-	events = append(events, loop.NewEvent(loop.EventAgentThinking, "Generating plan..."))
+	events = append(events, NewRunEvent(EventAgentThinking, "Generating plan..."))
 
-	steps, err := o.planner.Plan(ctx, task.Description, o.config.AvailableTools)
+	steps, err := o.planner.Plan(ctx, req.Description, o.config.AvailableTools)
 	if err != nil {
-		events = append(events, loop.NewEvent(loop.EventTaskFailed, fmt.Sprintf("Plan generation failed: %v", err)))
+		events = append(events, NewRunEvent(EventTaskFailed, fmt.Sprintf("Plan generation failed: %v", err)))
 		return events, fmt.Errorf("generate plan: %w", err)
 	}
 
-	events = append(events, loop.NewEvent(loop.EventLLMResponse, fmt.Sprintf("Plan created with %d steps", len(steps))))
+	events = append(events, NewRunEvent(EventLLMResponse, fmt.Sprintf("Plan created with %d steps", len(steps))))
 
 	// 2. Notify callback
 	if err := o.callback.OnPlanCreated(steps); err != nil {
-		events = append(events, loop.NewEvent(loop.EventTaskFailed, fmt.Sprintf("Plan rejected: %v", err)))
+		events = append(events, NewRunEvent(EventTaskFailed, fmt.Sprintf("Plan rejected: %v", err)))
 		return events, err
 	}
 
@@ -111,35 +111,33 @@ func (o *Orchestrator) runPlan(ctx context.Context, task loop.Task) ([]loop.Even
 
 	// 3. Execute via workflow runner
 	if o.workflow == nil {
-		// Fallback: run each step as a standalone task through the ReAct loop
-		return o.runPlanViaLoop(ctx, task, steps, events)
+		return o.runPlanViaLoop(ctx, req, steps, events)
 	}
 
 	results, err := o.workflow.Execute(ctx, steps)
 	if err != nil {
-		events = append(events, loop.NewEvent(loop.EventTaskFailed, fmt.Sprintf("Plan execution failed: %v", err)))
+		events = append(events, NewRunEvent(EventTaskFailed, fmt.Sprintf("Plan execution failed: %v", err)))
 		return events, fmt.Errorf("execute plan: %w", err)
 	}
 
 	// 4. Summarize results
 	for _, r := range results {
 		if r.Success {
-			events = append(events, loop.NewEvent(loop.EventAgentReply, r.Output))
+			events = append(events, NewRunEvent(EventAgentReply, r.Output))
 		} else {
-			events = append(events, loop.NewEvent(loop.EventToolError, r.Error.Error()))
+			events = append(events, NewRunEvent(EventToolError, r.Error.Error()))
 		}
 	}
 
-	events = append(events, loop.NewEvent(loop.EventTaskCompleted, "Plan completed"))
+	events = append(events, NewRunEvent(EventTaskCompleted, "Plan completed"))
 	return events, nil
 }
 
-// runPlanViaLoop falls back to running each step through the ReAct engine.
-// Used when workflow runner is not yet available.
-func (o *Orchestrator) runPlanViaLoop(ctx context.Context, parent loop.Task, steps []planner.Step, events []loop.Event) ([]loop.Event, error) {
+// runPlanViaLoop falls back to running each step through the engine.
+func (o *Orchestrator) runPlanViaLoop(ctx context.Context, parent RunRequest, steps []planner.Step, events []RunEvent) ([]RunEvent, error) {
 	for i, step := range steps {
 		if err := ctx.Err(); err != nil {
-			events = append(events, loop.NewEvent(loop.EventTaskFailed, "Cancelled"))
+			events = append(events, NewRunEvent(EventTaskFailed, "Cancelled"))
 			return events, err
 		}
 
@@ -147,12 +145,12 @@ func (o *Orchestrator) runPlanViaLoop(ctx context.Context, parent loop.Task, ste
 			return events, err
 		}
 
-		stepTask := loop.Task{
+		stepReq := RunRequest{
 			ID:          fmt.Sprintf("%s-step-%d", parent.ID, i),
 			Description: step.Description,
 		}
 
-		stepEvents, err := o.engine.RunWithContext(ctx, stepTask)
+		stepEvents, err := o.engine.Run(ctx, stepReq)
 		events = append(events, stepEvents...)
 
 		result := ""
@@ -167,11 +165,11 @@ func (o *Orchestrator) runPlanViaLoop(ctx context.Context, parent loop.Task, ste
 		}
 
 		if err != nil {
-			events = append(events, loop.NewEvent(loop.EventTaskFailed, fmt.Sprintf("Step %d failed: %v", i+1, err)))
+			events = append(events, NewRunEvent(EventTaskFailed, fmt.Sprintf("Step %d failed: %v", i+1, err)))
 			return events, fmt.Errorf("step %d: %w", i+1, err)
 		}
 	}
 
-	events = append(events, loop.NewEvent(loop.EventTaskCompleted, "Plan completed"))
+	events = append(events, NewRunEvent(EventTaskCompleted, "Plan completed"))
 	return events, nil
 }

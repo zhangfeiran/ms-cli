@@ -8,7 +8,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/vigo999/ms-cli/agent/loop"
+	"github.com/vigo999/ms-cli/agent/orchestrator"
 	"github.com/vigo999/ms-cli/ui"
 	"github.com/vigo999/ms-cli/ui/model"
 )
@@ -97,12 +97,12 @@ func (a *Application) runTask(description string) {
 
 	a.EventCh <- model.Event{Type: model.AgentThinking}
 
-	task := loop.Task{
+	req := orchestrator.RunRequest{
 		ID:          generateTaskID(),
 		Description: description,
 	}
 
-	events, err := a.Orchestrator.Run(context.Background(), task)
+	events, err := a.Orchestrator.Run(context.Background(), req)
 	if err != nil {
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "timeout") || strings.Contains(errMsg, "deadline") {
@@ -117,81 +117,52 @@ func (a *Application) runTask(description string) {
 	}
 
 	for _, ev := range events {
-		uiEvent := a.convertEvent(ev)
+		uiEvent := convertRunEvent(ev)
 		if uiEvent != nil {
 			a.EventCh <- *uiEvent
 		}
 	}
 }
 
-func (a *Application) convertEvent(ev loop.Event) *model.Event {
-	switch ev.Type {
-	case loop.EventAgentReply:
-		return &model.Event{
-			Type: model.AgentReply, Message: ev.Message,
-			CtxUsed: ev.CtxUsed, CtxMax: ev.CtxMax, TokensUsed: ev.TokensUsed,
+// convertRunEvent maps orchestrator RunEvent → UI model.Event.
+func convertRunEvent(ev orchestrator.RunEvent) *model.Event {
+	// Map event type string to UI event type.
+	// RunEvent types are a superset of loop event types since the engine
+	// adapter passes them through.
+	typeMap := map[string]model.EventType{
+		"AgentReply":    model.AgentReply,
+		"AgentThinking": model.AgentThinking,
+		"ToolRead":      model.ToolRead,
+		"ToolGrep":      model.ToolGrep,
+		"ToolGlob":      model.ToolGlob,
+		"ToolEdit":      model.ToolEdit,
+		"ToolWrite":     model.ToolWrite,
+		"ToolError":     model.ToolError,
+		"CmdStarted":    model.CmdStarted,
+		"AnalysisReady": model.AnalysisReady,
+		"TokenUpdate":   model.TokenUpdate,
+		"TaskFailed":    model.ToolError,
+	}
+
+	uiType, ok := typeMap[ev.Type]
+	if !ok {
+		if ev.Type == "TaskCompleted" {
+			return nil
 		}
-	case loop.EventAgentThinking:
-		return &model.Event{
-			Type: model.AgentThinking,
-			CtxUsed: ev.CtxUsed, CtxMax: ev.CtxMax, TokensUsed: ev.TokensUsed,
-		}
-	case loop.EventToolRead:
-		return &model.Event{
-			Type: model.ToolRead, Message: ev.Message, ToolName: ev.ToolName, Summary: ev.Summary,
-			CtxUsed: ev.CtxUsed, CtxMax: ev.CtxMax, TokensUsed: ev.TokensUsed,
-		}
-	case loop.EventToolGrep:
-		return &model.Event{
-			Type: model.ToolGrep, Message: ev.Message, ToolName: ev.ToolName, Summary: ev.Summary,
-			CtxUsed: ev.CtxUsed, CtxMax: ev.CtxMax, TokensUsed: ev.TokensUsed,
-		}
-	case loop.EventToolGlob:
-		return &model.Event{
-			Type: model.ToolGlob, Message: ev.Message, ToolName: ev.ToolName, Summary: ev.Summary,
-			CtxUsed: ev.CtxUsed, CtxMax: ev.CtxMax, TokensUsed: ev.TokensUsed,
-		}
-	case loop.EventToolEdit:
-		return &model.Event{
-			Type: model.ToolEdit, Message: ev.Message, ToolName: ev.ToolName,
-			CtxUsed: ev.CtxUsed, CtxMax: ev.CtxMax, TokensUsed: ev.TokensUsed,
-		}
-	case loop.EventToolWrite:
-		return &model.Event{
-			Type: model.ToolWrite, Message: ev.Message, ToolName: ev.ToolName,
-			CtxUsed: ev.CtxUsed, CtxMax: ev.CtxMax, TokensUsed: ev.TokensUsed,
-		}
-	case loop.EventToolError:
-		return &model.Event{
-			Type: model.ToolError, Message: ev.Message, ToolName: ev.ToolName,
-			CtxUsed: ev.CtxUsed, CtxMax: ev.CtxMax, TokensUsed: ev.TokensUsed,
-		}
-	case loop.EventCmdStarted:
-		return &model.Event{
-			Type: model.CmdStarted, Message: ev.Message,
-			CtxUsed: ev.CtxUsed, CtxMax: ev.CtxMax, TokensUsed: ev.TokensUsed,
-		}
-	case loop.EventAnalysisReady:
-		return &model.Event{
-			Type: model.AnalysisReady, Message: ev.Message,
-			CtxUsed: ev.CtxUsed, CtxMax: ev.CtxMax, TokensUsed: ev.TokensUsed,
-		}
-	case loop.EventTokenUpdate:
-		return &model.Event{
-			Type: model.TokenUpdate,
-			CtxUsed: ev.CtxUsed, CtxMax: ev.CtxMax, TokensUsed: ev.TokensUsed,
-		}
-	case loop.EventTaskCompleted:
-		return nil
-	case loop.EventTaskFailed:
-		return &model.Event{
-			Type: model.ToolError, ToolName: "Task", Message: ev.Message,
-		}
-	default:
 		if ev.Message != "" {
 			return &model.Event{Type: model.AgentReply, Message: ev.Message}
 		}
 		return nil
+	}
+
+	return &model.Event{
+		Type:       uiType,
+		Message:    ev.Message,
+		ToolName:   ev.ToolName,
+		Summary:    ev.Summary,
+		CtxUsed:    ev.CtxUsed,
+		CtxMax:     ev.CtxMax,
+		TokensUsed: ev.TokensUsed,
 	}
 }
 

@@ -141,17 +141,18 @@ func Wire(cfg BootstrapConfig) (*Application, error) {
 	engine.SetPermissionService(permService)
 
 	// Build orchestrator (planner is nil when LLM is not ready)
+	adapter := newEngineAdapter(engine)
 	var orch *orchestrator.Orchestrator
 	if provider != nil {
 		p := planner.New(provider, planner.DefaultConfig())
 		orch = orchestrator.New(orchestrator.Config{
 			Mode:           orchestrator.ModeStandard,
 			AvailableTools: engine.ToolNames(),
-		}, engine, p, nil)
+		}, adapter, p, nil)
 	} else {
 		orch = orchestrator.New(orchestrator.Config{
 			Mode: orchestrator.ModeStandard,
-		}, engine, nil, nil)
+		}, adapter, nil, nil)
 	}
 
 	return &Application{
@@ -216,12 +217,13 @@ func (a *Application) SetProvider(providerName, modelName, apiKey string) error 
 		p := planner.New(provider, planner.DefaultConfig())
 		mode := orchestrator.ModeStandard
 		if a.Orchestrator != nil {
-			// preserve current mode
+			mode = a.Orchestrator.CurrentMode()
 		}
+		newAdapter := newEngineAdapter(newEngine)
 		a.Orchestrator = orchestrator.New(orchestrator.Config{
 			Mode:           mode,
 			AvailableTools: newEngine.ToolNames(),
-		}, newEngine, p, nil)
+		}, newAdapter, p, nil)
 	}
 
 	if a.stateManager != nil {
