@@ -136,6 +136,7 @@ func convertLoopEvent(ev loop.Event) *model.Event {
 		"ToolGlob":      model.ToolGlob,
 		"ToolEdit":      model.ToolEdit,
 		"ToolWrite":     model.ToolWrite,
+		"ToolSkillLoad": model.ToolSkillLoad,
 		"ToolError":     model.ToolError,
 		"CmdStarted":    model.CmdStarted,
 		"AnalysisReady": model.AnalysisReady,

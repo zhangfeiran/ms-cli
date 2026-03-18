@@ -1,12 +1,16 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/vigo999/ms-cli/integrations/llm"
+	integrationskills "github.com/vigo999/ms-cli/integrations/skills"
 	"github.com/vigo999/ms-cli/internal/project"
 	"github.com/vigo999/ms-cli/permission"
 	"github.com/vigo999/ms-cli/ui/model"
@@ -44,6 +48,9 @@ func (a *Application) handleCommand(input string) {
 	case "/help":
 		a.cmdHelp()
 	default:
+		if a.tryHandleSkillCommand(parts[0], parts[1:]) {
+			return
+		}
 		a.EventCh <- model.Event{
 			Type:    model.AgentReply,
 			Message: fmt.Sprintf("Unknown command: %s. Type /help for available commands.", parts[0]),
@@ -219,6 +226,9 @@ func (a *Application) cmdCompact() {
 }
 
 func (a *Application) cmdClear() {
+	if a.ctxManager != nil {
+		a.ctxManager.Clear()
+	}
 	a.EventCh <- model.Event{Type: model.ClearScreen, Message: "Chat history cleared."}
 }
 
@@ -412,5 +422,116 @@ Environment Variables:
   OPENAI_MODEL            Model (fallback)
   OPENAI_API_KEY          API key (fallback)`
 
+	if len(a.skillSummaries) > 0 {
+		var b strings.Builder
+		b.WriteString(helpText)
+		b.WriteString("\n\nSkill Commands:\n")
+		b.WriteString("  /<skill>                Load a skill into context\n")
+		b.WriteString("  /<skill> <task>         Load a skill, then run the task\n")
+		for _, summary := range a.skillSummaries {
+			b.WriteString(fmt.Sprintf("  /%-22s %s\n", summary.Name, summary.Description))
+		}
+		helpText = strings.TrimRight(b.String(), "\n")
+	}
+
 	a.EventCh <- model.Event{Type: model.AgentReply, Message: helpText}
+}
+
+func (a *Application) tryHandleSkillCommand(command string, args []string) bool {
+	if a.skillCatalog == nil {
+		return false
+	}
+
+	skillName := strings.TrimPrefix(strings.TrimSpace(command), "/")
+	if skillName == "" {
+		return false
+	}
+
+	if _, err := a.skillCatalog.Load(skillName); err != nil {
+		if errors.Is(err, integrationskills.ErrSkillNotFound) {
+			return false
+		}
+		a.EventCh <- model.Event{
+			Type:     model.ToolError,
+			ToolName: "load_skill",
+			Message:  err.Error(),
+		}
+		return true
+	}
+
+	summary, err := a.injectSkillToolResult(skillName)
+	if err != nil {
+		a.EventCh <- model.Event{
+			Type:     model.ToolError,
+			ToolName: "load_skill",
+			Message:  err.Error(),
+		}
+		return true
+	}
+
+	a.EventCh <- model.Event{
+		Type:    model.ToolSkillLoad,
+		Message: summary,
+		Summary: summary,
+	}
+
+	if len(args) == 0 {
+		return true
+	}
+
+	go a.runTask(strings.Join(args, " "))
+	return true
+}
+
+func (a *Application) injectSkillToolResult(skillName string) (string, error) {
+	if a.ctxManager == nil {
+		return "", fmt.Errorf("context manager is not initialized")
+	}
+	if a.toolRegistry == nil {
+		return "", fmt.Errorf("tool registry is not initialized")
+	}
+
+	tool, ok := a.toolRegistry.Get("load_skill")
+	if !ok {
+		return "", fmt.Errorf("tool not found: load_skill")
+	}
+
+	payload, err := json.Marshal(map[string]string{"name": skillName})
+	if err != nil {
+		return "", fmt.Errorf("marshal load_skill args: %w", err)
+	}
+
+	result, err := tool.Execute(context.Background(), payload)
+	if err != nil {
+		return "", fmt.Errorf("execute load_skill: %w", err)
+	}
+	if result == nil {
+		return "", fmt.Errorf("load_skill returned no result")
+	}
+	if result.Error != nil {
+		return "", result.Error
+	}
+
+	callID := fmt.Sprintf("skill_%d", time.Now().UnixNano())
+	if err := a.ctxManager.AddMessage(llm.Message{
+		Role: "assistant",
+		ToolCalls: []llm.ToolCall{
+			{
+				ID:   callID,
+				Type: "function",
+				Function: llm.ToolCallFunc{
+					Name:      "load_skill",
+					Arguments: payload,
+				},
+			},
+		},
+	}); err != nil {
+		return "", fmt.Errorf("add load_skill tool call: %w", err)
+	}
+
+	if err := a.ctxManager.AddToolResult(callID, result.Content); err != nil {
+		return "", fmt.Errorf("add load_skill tool result: %w", err)
+	}
+
+	return result.Summary, nil
 }

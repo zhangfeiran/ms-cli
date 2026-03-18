@@ -284,12 +284,13 @@ func (ex *executor) executeToolCall(ctx context.Context, tc llm.ToolCall) error 
 }
 
 var toolEventMap = map[string]string{
-	"read":  EventToolRead,
-	"grep":  EventToolGrep,
-	"glob":  EventToolGlob,
-	"edit":  EventToolEdit,
-	"write": EventToolWrite,
-	"shell": EventCmdStarted,
+	"read":       EventToolRead,
+	"grep":       EventToolGrep,
+	"glob":       EventToolGlob,
+	"edit":       EventToolEdit,
+	"write":      EventToolWrite,
+	"shell":      EventCmdStarted,
+	"load_skill": EventToolSkillLoad,
 }
 
 func (ex *executor) addToolEvent(toolName string, result *tools.Result) {
@@ -297,7 +298,11 @@ func (ex *executor) addToolEvent(toolName string, result *tools.Result) {
 	if t, ok := toolEventMap[toolName]; ok {
 		eventType = t
 	}
-	ev := NewEvent(eventType, result.Content)
+	message := result.Content
+	if toolName == "load_skill" {
+		message = result.Summary
+	}
+	ev := NewEvent(eventType, message)
 	ev.ToolName = toolName
 	ev.Summary = result.Summary
 	ex.addEvent(ev)
@@ -355,6 +360,7 @@ You have access to the following tools:
 - grep: Search for patterns in files
 - glob: Find files matching patterns
 - shell: Execute shell commands
+- load_skill: Load the full instructions for a named skill into context
 
 Guidelines:
 1. Use tools to gather information before making changes
@@ -362,8 +368,16 @@ Guidelines:
 3. Make minimal, focused changes
 4. Use grep and glob to explore the codebase
 5. Run tests with shell to verify changes
+6. When an available skill clearly matches the task, call load_skill before proceeding
+7. Treat loaded_skill tool results as instructions that should guide your work
+8. Do not reload the same skill repeatedly unless the user asks or a different skill is needed
 
 IMPORTANT: When you have gathered enough information to answer the user's question, you MUST provide your final answer directly WITHOUT using any more tools. Do not keep calling tools indefinitely - provide a clear, concise response once you have the information needed.
 
 When making edits, ensure the old_string matches exactly (including whitespace and newlines).`
+}
+
+// DefaultSystemPrompt returns the base system prompt used by the loop.
+func DefaultSystemPrompt() string {
+	return defaultSystemPrompt()
 }

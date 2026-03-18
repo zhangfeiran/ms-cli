@@ -65,6 +65,7 @@ const (
 	EventToolGlob      = "ToolGlob"
 	EventToolEdit      = "ToolEdit"
 	EventToolWrite     = "ToolWrite"
+	EventToolSkillLoad = "ToolSkillLoad"
 	EventAnalysisReady = "AnalysisReady"
 	EventDone          = "Done"
 )

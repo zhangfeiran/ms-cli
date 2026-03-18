@@ -49,10 +49,10 @@ func agentMsg(source, msg string, done bool) string {
 }
 
 var (
-	diffAddStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("114")) // green
-	diffRemoveStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("196")) // red
-	diffHunkStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))  // blue
-	diffFileStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Bold(true)
+	diffAddStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("114")) // green
+	diffRemoveStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("196")) // red
+	diffHunkStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))  // blue
+	diffFileStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Bold(true)
 	diffContextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("244")) // dim
 	diffSummaryStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Bold(true)
 )
@@ -566,6 +566,15 @@ func (a App) handleEvent(ev model.Event) (tea.Model, tea.Cmd) {
 		a.state = a.state.WithMessage(model.Message{
 			Kind: model.MsgTool, ToolName: "Write",
 			Display: model.DisplayExpanded, Content: ev.Message,
+		})
+
+	case model.ToolSkillLoad:
+		a.state = a.state.WithMessage(model.Message{
+			Kind:     model.MsgTool,
+			ToolName: "Skill",
+			Display:  model.DisplayCollapsed,
+			Content:  ev.Message,
+			Summary:  ev.Summary,
 		})
 
 	case model.ToolError:

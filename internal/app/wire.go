@@ -15,14 +15,17 @@ import (
 	"github.com/vigo999/ms-cli/configs"
 	"github.com/vigo999/ms-cli/integrations/llm"
 	openai "github.com/vigo999/ms-cli/integrations/llm/openai"
+	integrationskills "github.com/vigo999/ms-cli/integrations/skills"
 	itrain "github.com/vigo999/ms-cli/internal/train"
 	"github.com/vigo999/ms-cli/permission"
 	rshell "github.com/vigo999/ms-cli/runtime/shell"
 	"github.com/vigo999/ms-cli/tools"
 	"github.com/vigo999/ms-cli/tools/fs"
 	"github.com/vigo999/ms-cli/tools/shell"
+	toolskill "github.com/vigo999/ms-cli/tools/skill"
 	"github.com/vigo999/ms-cli/trace"
 	"github.com/vigo999/ms-cli/ui/model"
+	"github.com/vigo999/ms-cli/ui/slash"
 	wtrain "github.com/vigo999/ms-cli/workflow/train"
 )
 
@@ -32,19 +35,22 @@ const Version = "MindSpore AI Infra Agent CLI. v0.2.0"
 
 // Application is the top-level composition container.
 type Application struct {
-	Engine       *loop.Engine
-	EventCh      chan model.Event
-	Demo         bool
-	llmReady     bool
-	WorkDir      string
-	RepoURL      string
-	Config       *configs.Config
-	provider     llm.Provider
-	toolRegistry *tools.Registry
-	ctxManager   *agentctx.Manager
-	permService  permission.PermissionService
-	stateManager *configs.StateManager
-	traceWriter  trace.Writer
+	Engine         *loop.Engine
+	EventCh        chan model.Event
+	Demo           bool
+	llmReady       bool
+	WorkDir        string
+	RepoURL        string
+	Config         *configs.Config
+	provider       llm.Provider
+	toolRegistry   *tools.Registry
+	ctxManager     *agentctx.Manager
+	permService    permission.PermissionService
+	stateManager   *configs.StateManager
+	traceWriter    trace.Writer
+	skillCatalog   *integrationskills.Catalog
+	skillSummaries []integrationskills.SkillSummary
+	systemPrompt   string
 
 	// Train mode state
 	trainMode       bool
@@ -105,6 +111,14 @@ func Wire(cfg BootstrapConfig) (*Application, error) {
 		config.Model.Key = cfg.Key
 	}
 
+	skillCatalog := integrationskills.DefaultCatalog(workDir)
+	skillSummaries, skillErr := skillCatalog.List()
+	if skillErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to list some skills: %v\n", skillErr)
+	}
+	registerSkillSlashCommands(skillSummaries)
+	systemPrompt := buildSystemPrompt(skillSummaries)
+
 	var provider llm.Provider
 	llmReady := true
 	if cfg.Demo {
@@ -121,7 +135,7 @@ func Wire(cfg BootstrapConfig) (*Application, error) {
 		}
 	}
 
-	toolRegistry := initTools(config, workDir)
+	toolRegistry := initTools(config, workDir, skillCatalog)
 
 	ctxManager := agentctx.NewManager(agentctx.ManagerConfig{
 		MaxTokens:           config.Context.MaxTokens,
@@ -140,6 +154,7 @@ func Wire(cfg BootstrapConfig) (*Application, error) {
 		MaxTokens:      config.Budget.MaxTokens,
 		Temperature:    float32(config.Model.Temperature),
 		TimeoutPerTurn: time.Duration(config.Model.TimeoutSec) * time.Second,
+		SystemPrompt:   systemPrompt,
 	}
 	engine := loop.NewEngine(engineCfg, provider, toolRegistry)
 	engine.SetContextManager(ctxManager)
@@ -149,19 +164,22 @@ func Wire(cfg BootstrapConfig) (*Application, error) {
 	engine.SetPermissionService(permService)
 
 	return &Application{
-		Engine:       engine,
-		EventCh:      make(chan model.Event, 64),
-		Demo:         cfg.Demo,
-		WorkDir:      workDir,
-		RepoURL:      "github.com/vigo999/ms-cli",
-		Config:       config,
-		provider:     provider,
-		toolRegistry: toolRegistry,
-		ctxManager:   ctxManager,
-		permService:  permService,
-		stateManager: stateManager,
-		traceWriter:  traceWriter,
-		llmReady:     llmReady,
+		Engine:         engine,
+		EventCh:        make(chan model.Event, 64),
+		Demo:           cfg.Demo,
+		WorkDir:        workDir,
+		RepoURL:        "github.com/vigo999/ms-cli",
+		Config:         config,
+		provider:       provider,
+		toolRegistry:   toolRegistry,
+		ctxManager:     ctxManager,
+		permService:    permService,
+		stateManager:   stateManager,
+		traceWriter:    traceWriter,
+		llmReady:       llmReady,
+		skillCatalog:   skillCatalog,
+		skillSummaries: skillSummaries,
+		systemPrompt:   systemPrompt,
 	}, nil
 }
 
@@ -195,6 +213,7 @@ func (a *Application) SetProvider(providerName, modelName, apiKey string) error 
 		MaxTokens:      a.Config.Budget.MaxTokens,
 		Temperature:    float32(a.Config.Model.Temperature),
 		TimeoutPerTurn: time.Duration(a.Config.Model.TimeoutSec) * time.Second,
+		SystemPrompt:   a.systemPrompt,
 	}
 	newEngine := loop.NewEngine(engineCfg, provider, a.toolRegistry)
 	newEngine.SetContextManager(a.ctxManager)
@@ -252,7 +271,7 @@ func initProvider(cfg configs.ModelConfig) (llm.Provider, error) {
 	return client, nil
 }
 
-func initTools(cfg *configs.Config, workDir string) *tools.Registry {
+func initTools(cfg *configs.Config, workDir string, skillCatalog *integrationskills.Catalog) *tools.Registry {
 	registry := tools.NewRegistry()
 
 	registry.MustRegister(fs.NewReadTool(workDir))
@@ -260,6 +279,7 @@ func initTools(cfg *configs.Config, workDir string) *tools.Registry {
 	registry.MustRegister(fs.NewEditTool(workDir))
 	registry.MustRegister(fs.NewGrepTool(workDir))
 	registry.MustRegister(fs.NewGlobTool(workDir))
+	registry.MustRegister(toolskill.NewLoadTool(skillCatalog))
 
 	shellRunner := rshell.NewRunner(rshell.Config{
 		WorkDir:        workDir,
@@ -271,4 +291,37 @@ func initTools(cfg *configs.Config, workDir string) *tools.Registry {
 	registry.MustRegister(shell.NewShellTool(shellRunner))
 
 	return registry
+}
+
+func buildSystemPrompt(summaries []integrationskills.SkillSummary) string {
+	base := loop.DefaultSystemPrompt()
+	return base + integrationskills.FormatPromptSection(summaries)
+}
+
+func registerSkillSlashCommands(summaries []integrationskills.SkillSummary) {
+	for _, summary := range summaries {
+		name := "/" + summary.Name
+		if isBuiltInSlashCommand(name) {
+			continue
+		}
+		desc := summary.Description
+		if desc == "" {
+			desc = "Load skill instructions into context"
+		}
+		slash.Register(slash.Command{
+			Name:        name,
+			Description: desc,
+			Usage:       name + " [task]",
+		})
+	}
+}
+
+func isBuiltInSlashCommand(name string) bool {
+	switch name {
+	case "/roadmap", "/weekly", "/model", "/exit", "/compact", "/clear",
+		"/test", "/permission", "/yolo", "/mouse", "/train", "/help":
+		return true
+	default:
+		return false
+	}
 }

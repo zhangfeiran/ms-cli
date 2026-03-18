@@ -18,7 +18,7 @@ type ModelInfo struct {
 type MessageKind int
 
 const (
-	MsgUser     MessageKind = iota
+	MsgUser MessageKind = iota
 	MsgAgent
 	MsgThinking
 	MsgTool
@@ -46,24 +46,25 @@ type Message struct {
 type EventType string
 
 const (
-	TaskUpdated    EventType = "TaskUpdated"
-	CmdStarted     EventType = "CmdStarted"
-	CmdOutput      EventType = "CmdOutput"
-	CmdFinished    EventType = "CmdFinished"
-	AnalysisReady  EventType = "AnalysisReady"
-	AgentReply     EventType = "AgentReply"
-	AgentThinking  EventType = "AgentThinking"
-	TokenUpdate    EventType = "TokenUpdate"
-	ToolRead       EventType = "ToolRead"
-	ToolGrep       EventType = "ToolGrep"
-	ToolGlob       EventType = "ToolGlob"
-	ToolEdit       EventType = "ToolEdit"
-	ToolWrite      EventType = "ToolWrite"
-	ToolError      EventType = "ToolError"
-	ClearScreen    EventType = "ClearScreen"
-	ModelUpdate    EventType = "ModelUpdate"
+	TaskUpdated     EventType = "TaskUpdated"
+	CmdStarted      EventType = "CmdStarted"
+	CmdOutput       EventType = "CmdOutput"
+	CmdFinished     EventType = "CmdFinished"
+	AnalysisReady   EventType = "AnalysisReady"
+	AgentReply      EventType = "AgentReply"
+	AgentThinking   EventType = "AgentThinking"
+	TokenUpdate     EventType = "TokenUpdate"
+	ToolRead        EventType = "ToolRead"
+	ToolGrep        EventType = "ToolGrep"
+	ToolGlob        EventType = "ToolGlob"
+	ToolEdit        EventType = "ToolEdit"
+	ToolWrite       EventType = "ToolWrite"
+	ToolSkillLoad   EventType = "ToolSkillLoad"
+	ToolError       EventType = "ToolError"
+	ClearScreen     EventType = "ClearScreen"
+	ModelUpdate     EventType = "ModelUpdate"
 	MouseModeToggle EventType = "MouseModeToggle"
-	Done           EventType = "Done"
+	Done            EventType = "Done"
 )
 
 // Event is sent from the agent loop to the TUI.
@@ -113,8 +114,8 @@ func NewState(version, workDir, repoURL, modelName string, ctxMax int) State {
 		ctxMax = 128000 // Default for models like gpt-4o
 	}
 	return State{
-		Version:      version,
-		Tasks:        []TaskInfo{},
+		Version: version,
+		Tasks:   []TaskInfo{},
 		Model: ModelInfo{
 			Name:   modelName,
 			CtxMax: ctxMax,
