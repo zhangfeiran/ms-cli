@@ -31,7 +31,7 @@ Do not model planning as a separate execution mode.
 Instead:
 
 1. the user submits a task
-2. the orchestrator optionally asks the model for a short plan proposal
+2. the app runtime optionally asks the model for a short plan proposal
 3. the plan is returned to the app and UI
 4. the user approves or revises the task
 5. the normal agent loop executes the task
@@ -39,18 +39,18 @@ Instead:
 So the architecture stays:
 
 ```text
-user input -> orchestrator -> agent loop -> tools -> result
+user input -> app runtime -> agent loop -> tools -> result
 ```
 
 And when a plan is required:
 
 ```text
-user input -> orchestrator -> plan proposal -> user approval -> agent loop
+user input -> app runtime -> plan proposal -> user approval -> agent loop
 ```
 
 ## Recommended Runtime Types
 
-Add a lightweight plan proposal type under `agent/orchestrator/`.
+Add a lightweight plan proposal type in the app runtime layer (for example `internal/app`).
 
 ```go
 type PlanProposal struct {
@@ -64,10 +64,10 @@ type PlanProposal struct {
 Extend the run request with an approval hint:
 
 ```go
-type RunRequest struct {
-    ID                  string
-    Description         string
-    RequirePlanApproval bool
+type PlanRequest struct {
+	ID                  string
+	Description         string
+	RequirePlanApproval bool
 }
 ```
 
@@ -75,7 +75,7 @@ This is intentionally small. It is enough to support plan display and approval w
 
 ## Recommended Event Model
 
-The orchestrator should emit plan-related events, not execute tools immediately when approval is required.
+The app runtime should emit plan-related events, not execute tools immediately when approval is required.
 
 Suggested event types:
 
@@ -98,9 +98,9 @@ type PlanEventData struct {
 
 This allows the UI to render plans separately from regular chat messages if needed.
 
-## Orchestrator Behavior
+## Runtime Behavior
 
-The orchestrator should support two paths.
+The app runtime should support two paths.
 
 ### Normal path
 
@@ -125,13 +125,13 @@ After the user approves:
 
 This means there is still only one real executor: the agent loop.
 
-## Suggested Orchestrator API
+## Suggested Runtime API
 
 Keep the API minimal.
 
 ```go
-func (o *Orchestrator) ProposePlan(ctx context.Context, req RunRequest) (*PlanProposal, error)
-func (o *Orchestrator) Run(ctx context.Context, req RunRequest) ([]RunEvent, error)
+func (a *Application) ProposePlan(ctx context.Context, req PlanRequest) (*PlanProposal, error)
+func (a *Application) RunTask(ctx context.Context, req PlanRequest) ([]model.Event, error)
 ```
 
 Expected behavior:
@@ -176,9 +176,9 @@ Suggested shape:
 
 ```go
 type PendingPlan struct {
-    TaskID   string
-    Request  orchestrator.RunRequest
-    Proposal *orchestrator.PlanProposal
+	TaskID   string
+	Request  PlanRequest
+	Proposal *PlanProposal
 }
 ```
 

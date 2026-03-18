@@ -12,8 +12,6 @@ import (
 
 	agentctx "github.com/vigo999/ms-cli/agent/context"
 	"github.com/vigo999/ms-cli/agent/loop"
-	"github.com/vigo999/ms-cli/agent/orchestrator"
-	"github.com/vigo999/ms-cli/agent/planner"
 	"github.com/vigo999/ms-cli/configs"
 	"github.com/vigo999/ms-cli/integrations/llm"
 	openai "github.com/vigo999/ms-cli/integrations/llm/openai"
@@ -25,7 +23,6 @@ import (
 	"github.com/vigo999/ms-cli/tools/shell"
 	"github.com/vigo999/ms-cli/trace"
 	"github.com/vigo999/ms-cli/ui/model"
-	wfexec "github.com/vigo999/ms-cli/workflow/executor"
 	wtrain "github.com/vigo999/ms-cli/workflow/train"
 )
 
@@ -36,7 +33,6 @@ const Version = "MindSpore AI Infra Agent CLI. v0.2.0"
 // Application is the top-level composition container.
 type Application struct {
 	Engine       *loop.Engine
-	Orchestrator *orchestrator.Orchestrator
 	EventCh      chan model.Event
 	Demo         bool
 	llmReady     bool
@@ -109,30 +105,19 @@ func Wire(cfg BootstrapConfig) (*Application, error) {
 		config.Model.Key = cfg.Key
 	}
 
-	if cfg.Demo {
-		engine := loop.NewEngine(loop.EngineConfig{}, nil, nil)
-		adapter := newEngineAdapter(engine)
-		demoWf := wfexec.NewDemo(filepath.Join(workDir, "demo", "scenarios"))
-		orch := orchestrator.New(orchestrator.Config{}, adapter, nil, demoWf)
-		return &Application{
-			Engine:       engine,
-			Orchestrator: orch,
-			EventCh:      make(chan model.Event, 64),
-			Demo:         true,
-			WorkDir:      workDir,
-			RepoURL:      "github.com/vigo999/ms-cli",
-			Config:       config,
-		}, nil
-	}
-
-	provider, err := initProvider(config.Model)
+	var provider llm.Provider
 	llmReady := true
-	if err != nil {
-		if errors.Is(err, errAPIKeyNotFound) {
-			llmReady = false
-			provider = nil
-		} else {
-			return nil, fmt.Errorf("init provider: %w", err)
+	if cfg.Demo {
+		llmReady = false
+	} else {
+		provider, err = initProvider(config.Model)
+		if err != nil {
+			if errors.Is(err, errAPIKeyNotFound) {
+				llmReady = false
+				provider = nil
+			} else {
+				return nil, fmt.Errorf("init provider: %w", err)
+			}
 		}
 	}
 
@@ -163,24 +148,10 @@ func Wire(cfg BootstrapConfig) (*Application, error) {
 	permService := permission.NewDefaultPermissionService(config.Permissions)
 	engine.SetPermissionService(permService)
 
-	// Build orchestrator (planner is nil when LLM is not ready)
-	adapter := newEngineAdapter(engine)
-	wf := wfexec.NewStub()
-	var orch *orchestrator.Orchestrator
-	if provider != nil {
-		p := planner.New(provider, planner.DefaultConfig())
-		orch = orchestrator.New(orchestrator.Config{
-			AvailableTools: engine.ToolNames(),
-		}, adapter, p, wf)
-	} else {
-		orch = orchestrator.New(orchestrator.Config{}, adapter, nil, wf)
-	}
-
 	return &Application{
 		Engine:       engine,
-		Orchestrator: orch,
 		EventCh:      make(chan model.Event, 64),
-		Demo:         false,
+		Demo:         cfg.Demo,
 		WorkDir:      workDir,
 		RepoURL:      "github.com/vigo999/ms-cli",
 		Config:       config,
@@ -232,18 +203,6 @@ func (a *Application) SetProvider(providerName, modelName, apiKey string) error 
 
 	a.Engine = newEngine
 	a.provider = provider
-
-	// Always rebuild orchestrator so it uses the new engine adapter.
-	// When provider is nil, planner is nil → orchestrator falls back to agent mode.
-	newAdapter := newEngineAdapter(newEngine)
-	newWf := wfexec.NewStub()
-	var p *planner.Planner
-	if provider != nil {
-		p = planner.New(provider, planner.DefaultConfig())
-	}
-	a.Orchestrator = orchestrator.New(orchestrator.Config{
-		AvailableTools: newEngine.ToolNames(),
-	}, newAdapter, p, newWf)
 
 	if a.stateManager != nil {
 		a.stateManager.SaveFromConfig(a.Config)

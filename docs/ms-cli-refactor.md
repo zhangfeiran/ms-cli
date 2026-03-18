@@ -3,6 +3,9 @@
 ## Goal
 Transform ms-cli from a monolith with hardcoded workflows into a thin agent runtime that loads skills from ms-skills and knowledge from ms-factory.
 
+## Status
+- 2026-03-18: Phase A1 implementation landed in code (workflow mode removed; app dispatches tasks directly to `agent/loop.Engine`).
+
 ## Phase A1: Remove Workflow Mode
 
 ### Files to delete:

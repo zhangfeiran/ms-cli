@@ -7,7 +7,7 @@ Agent-specific files at the repo root, such as `AGENTS.md` and `CLAUDE.md`, shou
 ## Source Of Truth
 
 - Treat the current code layout as authoritative.
-- Use [`docs/arch.md`](/home/weizheng/work/ms-cli/docs/arch.md) for the broader architecture map.
+- Use [`docs/arch.md`](../arch.md) for the broader architecture map.
 - If this guide and the code disagree, follow the code and update the docs.
 
 ## Working Approach
@@ -59,11 +59,8 @@ ms-cli/
     context/               token budget and context compaction
     loop/                  ReAct execution loop
     memory/                memory store, retrieval, policy
-    orchestrator/          planner dispatch and execution routing
-    planner/               execution-mode decision and plan generation
     session/               session state and persistence
   workflow/
-    executor/              workflow executor stub and demo path
     train/                 train lane controller, setup, run, demo backend
   integrations/
     domain/                domain client and schema
@@ -83,7 +80,6 @@ ms-cli/
   trace/                   execution trace writing
   report/                  summary generation
   configs/                 config loading and shared config types
-  demo/scenarios/          scenario playback data (JSON)
   test/mocks/              test doubles
   docs/                    project docs
 ```
@@ -93,18 +89,15 @@ ms-cli/
 The current primary runtime path is:
 
 ```text
-cmd/ms-cli -> internal/app -> agent/orchestrator -> agent/planner
-                                              -> agent executor or workflow executor
-agent executor path -> internal/app adapter -> agent/loop -> tools -> runtime/shell
+cmd/ms-cli -> internal/app -> agent/loop -> tools -> runtime/shell
 ```
 
 Important current details:
 
 - `cmd/ms-cli/main.go` only delegates to `internal/app.Run(...)`.
-- `internal/app` is the composition root and owns wiring plus adapter code.
-- `agent/orchestrator` owns orchestration-level request and event types.
-- `agent/planner` decides between `agent` and `workflow` execution modes.
-- `workflow/executor` still includes a stub path; demo mode uses workflow execution with a synthetic plan.
+- `internal/app` is the composition root and owns wiring plus event conversion.
+- `internal/app` dispatches free-text tasks directly into `agent/loop.Engine`.
+- Demo mode skips provider initialization; free-text still requires an API key.
 - `tools/` exposes LLM-callable tool surfaces; `runtime/shell/` owns stateful command execution.
 
 ## Dependency Boundaries
@@ -138,7 +131,7 @@ Package rules:
 - `tools/` may call `runtime/`, but `runtime/` must not call `tools/`.
 - `ui/` must remain a consumer of events, not a dependency of lower layers.
 - `configs/` should remain shared configuration/types, not an application logic layer.
-- Do not push demo-specific conditionals into planner/orchestrator core logic.
+- Do not add separate planner/orchestrator layers; keep runtime path app -> engine.
 
 ## Stable Contracts
 
@@ -148,9 +141,7 @@ Examples:
 
 - `permission.PermissionLevel` and `permission.PermissionDecision`
 - LLM provider interfaces and tool schema types under `integrations/llm`
-- loop engine transport types under `agent/loop`
-- `agent/planner.Plan`, `agent/planner.Step`, and `agent/planner.ExecutionMode`
-- `agent/orchestrator.RunRequest` and `agent/orchestrator.RunEvent`
+- loop task/event transport types under `agent/loop`
 - session state and persistence types under `agent/session`
 
 ## Skills And External Integrations
