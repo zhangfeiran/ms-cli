@@ -2,6 +2,27 @@
 
 AI infrastructure agent
 
+## Documentation Map
+
+Current documentation in [`docs/`](docs/) is split into:
+
+- shared repository policy: [`docs/ai/contributor-guide.md`](docs/ai/contributor-guide.md)
+- current architecture references:
+  - [`docs/arch.md`](docs/arch.md)
+  - [`docs/ms-cli-arch.md`](docs/ms-cli-arch.md)
+- active refactor and workstream plans:
+  - [`docs/ms-cli-refactor.md`](docs/ms-cli-refactor.md)
+  - [`docs/ms-skills-update-plan.md`](docs/ms-skills-update-plan.md)
+  - [`docs/incubating-factory-plan.md`](docs/incubating-factory-plan.md)
+  - [`docs/features-backlog.md`](docs/features-backlog.md)
+  - [`docs/how-to-provide-plan-proposal.md`](docs/how-to-provide-plan-proposal.md)
+
+Important:
+
+- architecture docs describe the current checkout
+- refactor/workstream docs describe planned target states
+- if they conflict, treat the current code as authoritative
+
 ## Prerequisites
 
 - Go 1.24.2+ (see `go.mod`)
@@ -105,53 +126,15 @@ Project reports:
 
 ## Repository Structure
 
-See [`docs/arch.md`](docs/arch.md) for the current architecture and package map.
+See [`docs/arch.md`](docs/arch.md) and [`docs/ms-cli-arch.md`](docs/ms-cli-arch.md)
+for the current architecture and package map.
 
-```text
-ms-cli/
-├── cmd/ms-cli/                 # CLI entrypoint
-├── internal/
-│   ├── app/                    # bootstrap, wiring, startup, commands
-│   ├── project/                # roadmap and weekly helpers
-│   └── train/                  # training types
-├── agent/
-│   ├── context/                # budget, compaction, context manager
-│   ├── loop/                   # ReAct engine
-│   ├── memory/                 # policy, store, retrieve
-│   ├── orchestrator/           # mode dispatch (agent vs workflow) based on planner
-│   ├── planner/                # LLM-based execution mode decision and plan generation
-│   └── session/                # session persistence
-├── integrations/
-│   ├── domain/                 # external domain client + schema
-│   ├── llm/                    # provider registry and clients
-│   └── skills/                 # skill invocation + repo
-├── permission/                 # permission engine
-├── workflow/
-│   ├── executor/               # workflow executor (stub for now)
-│   └── train/                  # training workflow + demo
-├── runtime/shell/              # low-level shell runner
-├── tools/
-│   ├── fs/                     # filesystem operations
-│   └── shell/                  # shell tool wrapper
-├── trace/                      # execution trace logging
-├── report/                     # report generation
-├── ui/
-│   ├── app.go                  # root Bubble Tea model
-│   ├── components/             # spinner, textinput, viewport, thinking
-│   ├── model/                  # shared state types, training model
-│   ├── panels/                 # topbar, chat, hintbar, training panels
-│   └── slash/                  # slash command handling
-├── configs/                    # config loading and shared types
-├── demo/scenarios/             # demo scenario data
-├── test/mocks/                 # test doubles
-├── docs/
-│   ├── roadmap/ROADMAP.md
-│   ├── arch.md
-│   └── updates/
-├── examples/
-├── go.mod
-└── README.md
-```
+The repository is under active refactor, so this README intentionally does not
+duplicate a full package tree. Use the linked architecture docs above as the
+source of truth for either:
+
+- the current checkout layout, or
+- explicitly labeled target-state planning docs under [`docs/`](docs/)
 
 ## Configuration
 
@@ -192,6 +175,17 @@ context:
 
 - The real-mode engine flow is still minimal/stub-oriented.
 - Running Bubble Tea in non-interactive shells may fail with `/dev/tty` errors.
+
+## Planning Workstreams
+
+The repository currently tracks three related planning streams:
+
+- Workstream A: `ms-cli` refactor into a thinner agent runtime
+- Workstream B: `ms-skills` update for prompt-oriented domain skills
+- Workstream C: incubating Factory schemas, cards, and pack format
+
+These plans live under [`docs/`](docs/) and are intended to guide staged
+implementation across `ms-cli`, `ms-skills`, and the future Factory split.
 
 ## Architecture Rule
 
