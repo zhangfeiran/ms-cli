@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -115,7 +116,11 @@ func Wire(cfg BootstrapConfig) (*Application, error) {
 	if cfg.Demo {
 		llmReady = false
 	} else {
-		provider, err = initProvider(config.Model)
+		resolveOpts := providerpkg.ResolveOptions{
+			PreferConfigAPIKey:  strings.TrimSpace(cfg.Key) != "",
+			PreferConfigBaseURL: strings.TrimSpace(cfg.URL) != "",
+		}
+		provider, err = initProvider(config.Model, resolveOpts)
 		if err != nil {
 			if errors.Is(err, errAPIKeyNotFound) {
 				llmReady = false
@@ -206,8 +211,13 @@ func Wire(cfg BootstrapConfig) (*Application, error) {
 
 // SetProvider updates model/key and reinitializes the engine.
 func (a *Application) SetProvider(providerName, modelName, apiKey string) error {
-	if providerName != "" && providerName != "openai" {
-		return fmt.Errorf("unsupported provider: %s (only openai-compatible is supported)", providerName)
+	normalizedProvider := normalizeProvider(providerName)
+	if normalizedProvider != "" && !isSupportedProvider(normalizedProvider) {
+		return fmt.Errorf("unsupported provider: %s", providerName)
+	}
+
+	if normalizedProvider != "" {
+		a.Config.Model.Provider = normalizedProvider
 	}
 
 	if modelName != "" {
@@ -217,7 +227,10 @@ func (a *Application) SetProvider(providerName, modelName, apiKey string) error 
 		a.Config.Model.Key = apiKey
 	}
 
-	provider, err := initProvider(a.Config.Model)
+	resolveOpts := providerpkg.ResolveOptions{
+		PreferConfigAPIKey: strings.TrimSpace(apiKey) != "",
+	}
+	provider, err := initProvider(a.Config.Model, resolveOpts)
 	if err != nil {
 		if err == errAPIKeyNotFound {
 			a.llmReady = false
@@ -262,8 +275,8 @@ func (a *Application) SaveState() error {
 	return a.stateManager.Save()
 }
 
-func initProvider(cfg configs.ModelConfig) (llm.Provider, error) {
-	resolved, err := providerpkg.ResolveConfig(cfg)
+func initProvider(cfg configs.ModelConfig, opts providerpkg.ResolveOptions) (llm.Provider, error) {
+	resolved, err := providerpkg.ResolveConfigWithOptions(cfg, opts)
 	if err != nil {
 		if errors.Is(err, providerpkg.ErrMissingAPIKey) {
 			return nil, errAPIKeyNotFound
@@ -276,6 +289,19 @@ func initProvider(cfg configs.ModelConfig) (llm.Provider, error) {
 		return nil, fmt.Errorf("build provider: %w", err)
 	}
 	return client, nil
+}
+
+func normalizeProvider(providerName string) string {
+	return strings.ToLower(strings.TrimSpace(providerName))
+}
+
+func isSupportedProvider(providerName string) bool {
+	switch normalizeProvider(providerName) {
+	case string(providerpkg.ProviderOpenAI), string(providerpkg.ProviderOpenAICompatible), string(providerpkg.ProviderAnthropic):
+		return true
+	default:
+		return false
+	}
 }
 
 func initTools(cfg *configs.Config, workDir string) *tools.Registry {
