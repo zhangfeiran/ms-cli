@@ -6,14 +6,14 @@ AI infrastructure agent
 
 Current documentation in [`docs/`](docs/) is split into:
 
-- shared repository policy: [`docs/ai/contributor-guide.md`](docs/ai/contributor-guide.md)
+- shared repository policy: [`docs/agent-contributor-guide.md`](docs/agent-contributor-guide.md)
 - current architecture references:
   - [`docs/arch.md`](docs/arch.md)
   - [`docs/ms-cli-arch.md`](docs/ms-cli-arch.md)
 - active refactor and workstream plans:
-  - [`docs/ms-cli-refactor.md`](docs/ms-cli-refactor.md)
-  - [`docs/ms-skills-update-plan.md`](docs/ms-skills-update-plan.md)
-  - [`docs/incubating-factory-plan.md`](docs/incubating-factory-plan.md)
+  - [`docs/impl-guide/ms-cli-refactor-3.md`](docs/impl-guide/ms-cli-refactor-3.md)
+  - [`docs/impl-guide/ms-skills-whole-update-plan.md`](docs/impl-guide/ms-skills-whole-update-plan.md)
+  - [`docs/impl-guide/ms-factory-struct-v0.1.md`](docs/impl-guide/ms-factory-struct-v0.1.md)
   - [`docs/features-backlog.md`](docs/features-backlog.md)
   - [`docs/how-to-provide-plan-proposal.md`](docs/how-to-provide-plan-proposal.md)
 

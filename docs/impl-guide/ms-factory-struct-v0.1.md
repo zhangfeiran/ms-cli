@@ -2,9 +2,7 @@
 
 ## Authoritative Design Source
 
-Use `docs/ms-factory-impl-guide.md` (NOT the older `incubating-factory-plan.md`
-which uses outdated terms like `failure`, `perf_feature`, `algo_feature` and 8
-lifecycle states).
+This is the authoritative factory structure spec for v0.1.
 
 ---
 
@@ -16,15 +14,17 @@ incubating/factory/
 ├── docs/
 │   └── overview.md
 ├── schemas/
-│   ├── known_failure.schema.yaml
+│   ├── known_issue.schema.yaml
 │   ├── operator.schema.yaml
-│   ├── trick.schema.yaml
+│   ├── perf_feature.schema.yaml
+│   ├── algo_feature.schema.yaml
 │   ├── model.schema.yaml
 │   └── report.schema.yaml
 ├── cards/
-│   ├── known_failures/
+│   ├── known_issues/
 │   ├── operators/
-│   ├── tricks/
+│   ├── perf_features/
+│   ├── algo_features/
 │   └── models/
 ├── reports/
 │   └── .gitkeep
@@ -41,19 +41,18 @@ metadata fields inside cards.
 
 ---
 
-## 2. Card Taxonomy (4 kinds)
+## 2. Card Taxonomy (5 kinds)
 
 | kind | directory | what it holds |
 |------|-----------|---------------|
-| `known_failure` | `cards/known_failures/` | Diagnosed failure patterns with detection rules and fixes |
+| `known_issue` | `cards/known_issues/` | Diagnosed problems (failure, accuracy, performance) with detection rules and fixes |
 | `operator` | `cards/operators/` | Operator support/status per platform, fallbacks, variants |
-| `trick` | `cards/tricks/` | Both perf optimizations AND algo techniques (differentiated by `category`) |
+| `perf_feature` | `cards/perf_features/` | Performance optimizations (compute, memory, communication, compilation) |
+| `algo_feature` | `cards/algo_features/` | Algorithm-level techniques (loss, attention, optimizer, regularization, scaling) |
 | `model` | `cards/models/` | Model training profiles with expected metrics and baselines |
 
-Key design decision: **`trick` is the unified term** for both performance
-optimizations (fused-adam, flash-attn, gradient-ckpt, etc.) and algorithm
-techniques (MHC, LoRA+, GaLore, DPO, etc.). They are differentiated by the
-`category` field, not by separate kinds.
+Performance features and algorithm features are separate kinds with their own
+schemas and directories. This makes filtering and skill routing straightforward.
 
 ---
 
@@ -62,7 +61,7 @@ techniques (MHC, LoRA+, GaLore, DPO, etc.). They are differentiated by the
 Every card YAML file has these top-level fields:
 
 ```yaml
-kind: <operator | known_failure | trick | model>
+kind: <operator | known_issue | perf_feature | algo_feature | model>
 id: <kebab-case-unique-id>
 lifecycle:
   state: <draft | stable | archived>    # only 3 states
@@ -83,13 +82,14 @@ confidence:
 
 ## 4. Schema Designs Per Kind
 
-### 4.1 known_failure.schema.yaml
+### 4.1 known_issue.schema.yaml
 
 ```yaml
-required: [kind, id, lifecycle, source, confidence, severity, description, detection]
+required: [kind, id, lifecycle, source, confidence, symptom, severity, description, detection]
 properties:
-  kind: { const: known_failure }
+  kind: { const: known_issue }
   id: { type: string }
+  symptom: { enum: [failure, accuracy, performance] }  # problem category
   lifecycle:
     state: { enum: [draft, stable, archived] }
   source:
@@ -110,6 +110,11 @@ properties:
     diff: { type: string }          # optional inline diff
     operator_id: { type: string }   # optional link to operator card
 ```
+
+The `symptom` field drives skill routing:
+- `failure` -> `failure-agent` consults these during `/diagnose` and `/fix`
+- `accuracy` -> `accuracy-agent` consults these
+- `performance` -> `performance-agent` consults these
 
 ### 4.2 operator.schema.yaml
 
@@ -138,17 +143,15 @@ properties:
   description: { type: string }         # LLM-readable prose
 ```
 
-### 4.3 trick.schema.yaml
+### 4.3 perf_feature.schema.yaml
 
 ```yaml
 required: [kind, id, lifecycle, source, confidence, name, category]
 properties:
-  kind: { const: trick }
+  kind: { const: perf_feature }
   id: { type: string }
   name: { type: string }
-  category:
-    enum: [compute, memory, communication, compilation,    # perf categories
-           loss, attention, optimizer, regularization, scaling]  # algo categories
+  category: { enum: [compute, memory, communication, compilation] }
   lifecycle:
     state: { enum: [draft, stable, archived] }
   source:
@@ -156,15 +159,39 @@ properties:
   confidence:
     level: { enum: [bootstrap, observed, verified] }
   description: { type: string }          # what it does, LLM-readable
-  expected_gain: { type: string }        # e.g. "+10% throughput" or "+1.5 pts accuracy"
+  expected_gain: { type: string }        # e.g. "+10% throughput"
   platforms: { type: array, items: string }  # applicable platforms
   compatible_methods: { type: array, items: string }  # e.g. ["lora", "full"]
   config_diff: { type: string }          # optional inline config change
   code_diff: { type: string }            # optional inline code change
-  dependencies: { type: array, items: string }  # optional trick ids
+  dependencies: { type: array, items: string }  # optional feature ids
 ```
 
-### 4.4 model.schema.yaml
+### 4.4 algo_feature.schema.yaml
+
+```yaml
+required: [kind, id, lifecycle, source, confidence, name, category]
+properties:
+  kind: { const: algo_feature }
+  id: { type: string }
+  name: { type: string }
+  category: { enum: [loss, attention, optimizer, regularization, scaling] }
+  lifecycle:
+    state: { enum: [draft, stable, archived] }
+  source:
+    kind: { enum: [bootstrap, execution, manual] }
+  confidence:
+    level: { enum: [bootstrap, observed, verified] }
+  description: { type: string }          # what it does, LLM-readable
+  expected_gain: { type: string }        # e.g. "+1.5 pts accuracy"
+  platforms: { type: array, items: string }  # applicable platforms
+  compatible_methods: { type: array, items: string }  # e.g. ["lora", "full"]
+  config_diff: { type: string }          # optional inline config change
+  code_diff: { type: string }            # optional inline code change
+  dependencies: { type: array, items: string }  # optional feature ids
+```
+
+### 4.5 model.schema.yaml
 
 ```yaml
 required: [kind, id, lifecycle, source, confidence, model, method, platform]
@@ -194,11 +221,12 @@ properties:
       pretrain_acc: { type: number }
       posttrain_acc: { type: number }
       tolerance: { type: number }
-  known_issues: { type: array, items: string }  # failure card ids
-  verified_tricks: { type: object }      # trick id -> observed metrics
+  known_issues: { type: array, items: string }  # known_issue card ids
+  verified_perf_features: { type: object }   # perf_feature id -> observed metrics
+  verified_algo_features: { type: object }   # algo_feature id -> observed metrics
 ```
 
-### 4.5 report.schema.yaml
+### 4.6 report.schema.yaml
 
 ```yaml
 required: [kind, id, lifecycle, source, confidence, context, observation]
@@ -250,17 +278,15 @@ All seeded cards use `source.kind: bootstrap` and `confidence.level: bootstrap`.
 | `flash-attention` | Flash Attention | attention | requires CANN >= 8.0.RC3, fallback: sdpa |
 | `sdpa` | SDPA | attention | fallback for flash-attention |
 
-### 5.2 Known Failures (3 cards)
+### 5.2 Known Issues (3 cards)
 
-| id | severity | detection pattern | from demo function |
-|----|----------|-------------------|--------------------|
-| `dsa-torch27-ascend` | critical | `DSA operator.*not implemented` | `AnalyzeFailure()` — DSA op not in torch 2.7 |
-| `fp16-softmax-drift` | high | `accuracy drift.*16.8 pts` | `AnalyzeSingleLaneDrift()` — fp16 softmax causes 16.8pt accuracy drop |
-| `cann-flash-attn-version` | high | `FlashAttentionScore.*not found` | `RunNPUAnalysis()` — FlashAttention needs CANN >= 8.0.RC3 |
+| id | symptom | severity | detection pattern | from demo function |
+|----|---------|----------|-------------------|--------------------|
+| `dsa-torch27-ascend` | failure | critical | `DSA operator.*not implemented` | `AnalyzeFailure()` — DSA op not in torch 2.7 |
+| `fp16-softmax-drift` | accuracy | high | `accuracy drift.*16.8 pts` | `AnalyzeSingleLaneDrift()` — fp16 softmax causes 16.8pt accuracy drop |
+| `cann-flash-attn-version` | failure | high | `FlashAttentionScore.*not found` | `RunNPUAnalysis()` — FlashAttention needs CANN >= 8.0.RC3 |
 
-### 5.3 Tricks (18 cards total)
-
-**Perf tricks** (9 cards, from `RunSingleLanePerfFeature`):
+### 5.3 Perf Features (9 cards, from `RunSingleLanePerfFeature`)
 
 | id | category | expected_gain |
 |----|----------|---------------|
@@ -274,7 +300,7 @@ All seeded cards use `source.kind: bootstrap` and `confidence.level: bootstrap`.
 | `sequence-parallel` | communication | split sequence across TP group |
 | `selective-recompute` | memory | checkpoint only attention layers |
 
-**Algo tricks** (9 cards, from `RunSingleLaneAlgoFeature`):
+### 5.4 Algo Features (9 cards, from `RunSingleLaneAlgoFeature`)
 
 | id | category | expected_gain |
 |----|----------|---------------|
@@ -288,10 +314,10 @@ All seeded cards use `source.kind: bootstrap` and `confidence.level: bootstrap`.
 | `sparse-attn` | attention | block-sparse attention, 0.75 sparsity |
 | `ddpm-noise` | loss | denoising diffusion noise scheduling |
 
-Each trick card includes `config_diff` and/or `code_diff` extracted from the
+Each feature card includes `config_diff` and/or `code_diff` extracted from the
 demo diff strings.
 
-### 5.4 Models (1 card)
+### 5.5 Models (1 card)
 
 | id | model | method | platform |
 |----|-------|--------|----------|
@@ -303,7 +329,8 @@ Expected metrics (from demo step data):
 - `throughput`: "510-520 tok/s" (base), "565-572 tok/s" (with fused-adam)
 - `eval_acc.ceval-valid`: 72.1% (baseline), 73.6% (with MHC)
 - `known_issues`: ["dsa-torch27-ascend", "fp16-softmax-drift"]
-- `verified_tricks`: fused-adam (571 tok/s), mhc (+1.5 pts)
+- `verified_perf_features`: fused-adam (571 tok/s)
+- `verified_algo_features`: mhc (+1.5 pts)
 
 ---
 
@@ -326,8 +353,9 @@ channel: stable
 created_at: "2026-03-18"
 card_count:
   operators: 6
-  known_failures: 3
-  tricks: 18
+  known_issues: 3
+  perf_features: 9
+  algo_features: 9
   models: 1
 cards:
   - { id: dsa, kind: operator, path: operators/dsa.yaml }
@@ -336,27 +364,27 @@ cards:
   - { id: softmax, kind: operator, path: operators/softmax.yaml }
   - { id: flash-attention, kind: operator, path: operators/flash-attention.yaml }
   - { id: sdpa, kind: operator, path: operators/sdpa.yaml }
-  - { id: dsa-torch27-ascend, kind: known_failure, path: known_failures/dsa-torch27-ascend.yaml }
-  - { id: fp16-softmax-drift, kind: known_failure, path: known_failures/fp16-softmax-drift.yaml }
-  - { id: cann-flash-attn-version, kind: known_failure, path: known_failures/cann-flash-attn-version.yaml }
-  - { id: fused-adam, kind: trick, path: tricks/fused-adam.yaml }
-  - { id: flash-attn-v2, kind: trick, path: tricks/flash-attn-v2.yaml }
-  - { id: gradient-ckpt, kind: trick, path: tricks/gradient-ckpt.yaml }
-  - { id: bf16-mixed, kind: trick, path: tricks/bf16-mixed.yaml }
-  - { id: graph-mode, kind: trick, path: tricks/graph-mode.yaml }
-  - { id: comm-overlap, kind: trick, path: tricks/comm-overlap.yaml }
-  - { id: zero-offload, kind: trick, path: tricks/zero-offload.yaml }
-  - { id: sequence-parallel, kind: trick, path: tricks/sequence-parallel.yaml }
-  - { id: selective-recompute, kind: trick, path: tricks/selective-recompute.yaml }
-  - { id: mhc, kind: trick, path: tricks/mhc.yaml }
-  - { id: lora-plus, kind: trick, path: tricks/lora-plus.yaml }
-  - { id: galore, kind: trick, path: tricks/galore.yaml }
-  - { id: dpo, kind: trick, path: tricks/dpo.yaml }
-  - { id: rope-scaling, kind: trick, path: tricks/rope-scaling.yaml }
-  - { id: moe-routing, kind: trick, path: tricks/moe-routing.yaml }
-  - { id: flash-attn, kind: trick, path: tricks/flash-attn.yaml }
-  - { id: sparse-attn, kind: trick, path: tricks/sparse-attn.yaml }
-  - { id: ddpm-noise, kind: trick, path: tricks/ddpm-noise.yaml }
+  - { id: dsa-torch27-ascend, kind: known_issue, path: known_issues/dsa-torch27-ascend.yaml }
+  - { id: fp16-softmax-drift, kind: known_issue, path: known_issues/fp16-softmax-drift.yaml }
+  - { id: cann-flash-attn-version, kind: known_issue, path: known_issues/cann-flash-attn-version.yaml }
+  - { id: fused-adam, kind: perf_feature, path: perf_features/fused-adam.yaml }
+  - { id: flash-attn-v2, kind: perf_feature, path: perf_features/flash-attn-v2.yaml }
+  - { id: gradient-ckpt, kind: perf_feature, path: perf_features/gradient-ckpt.yaml }
+  - { id: bf16-mixed, kind: perf_feature, path: perf_features/bf16-mixed.yaml }
+  - { id: graph-mode, kind: perf_feature, path: perf_features/graph-mode.yaml }
+  - { id: comm-overlap, kind: perf_feature, path: perf_features/comm-overlap.yaml }
+  - { id: zero-offload, kind: perf_feature, path: perf_features/zero-offload.yaml }
+  - { id: sequence-parallel, kind: perf_feature, path: perf_features/sequence-parallel.yaml }
+  - { id: selective-recompute, kind: perf_feature, path: perf_features/selective-recompute.yaml }
+  - { id: mhc, kind: algo_feature, path: algo_features/mhc.yaml }
+  - { id: lora-plus, kind: algo_feature, path: algo_features/lora-plus.yaml }
+  - { id: galore, kind: algo_feature, path: algo_features/galore.yaml }
+  - { id: dpo, kind: algo_feature, path: algo_features/dpo.yaml }
+  - { id: rope-scaling, kind: algo_feature, path: algo_features/rope-scaling.yaml }
+  - { id: moe-routing, kind: algo_feature, path: algo_features/moe-routing.yaml }
+  - { id: flash-attn, kind: algo_feature, path: algo_features/flash-attn.yaml }
+  - { id: sparse-attn, kind: algo_feature, path: algo_features/sparse-attn.yaml }
+  - { id: ddpm-noise, kind: algo_feature, path: algo_features/ddpm-noise.yaml }
   - { id: qwen3-7b-lora-ascend-910b, kind: model, path: models/qwen3-7b-lora-ascend-910b.yaml }
 ```
 
@@ -382,10 +410,11 @@ cards:
 ## 8. Implementation Steps
 
 1. Create directory structure
-2. Write 5 schema YAML files
+2. Write 6 schema YAML files
 3. Seed 6 operator cards
-4. Seed 3 known_failure cards
-5. Seed 18 trick cards (9 perf + 9 algo)
-6. Seed 1 model card
-7. Write manifests (index.yaml + pack.yaml)
-8. Write README.md and docs/overview.md
+4. Seed 3 known_issue cards
+5. Seed 9 perf_feature cards
+6. Seed 9 algo_feature cards
+7. Seed 1 model card
+8. Write manifests (index.yaml + pack.yaml)
+9. Write README.md and docs/overview.md
