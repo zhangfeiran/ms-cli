@@ -46,7 +46,6 @@ ms-cli/
     fs/                    read, grep, glob, edit, write tools
     shell/                 shell tool wrapper
   ui/                      Bubble Tea app, shared model, panels, slash commands
-  trace/                   execution trace writing
   report/                  summary generation
   configs/                 config loading, state, shared config types
   incubating/factory/      factory schemas, cards, packs (future separate repo)
@@ -124,8 +123,11 @@ features migrate to agent-skills.
 
 - **`agent/loop/`**
   The core runtime. Runs the LLM/tool loop: tool calling, permission checks,
-  tracing, context updates. Composes effective system prompt per task
+  context updates. Composes effective system prompt per task
   (base + active skill).
+
+- **`agent/session/`**
+  Owns session state, trajectory persistence, and resume reconstruction.
 
 - **`integrations/skills/`**
   Lists available skills from the ms-skills repo (summaries only).
@@ -161,8 +163,8 @@ features migrate to agent-skills.
 
 ```text
 cmd/ms-cli -> internal/app
-internal/app -> agent, workflow, ui, configs, integrations, tools, permission, trace
-agent -> integrations, permission, configs, trace
+internal/app -> agent, workflow, ui, configs, integrations, tools, permission
+agent -> integrations, permission, configs
 workflow -> internal/train, runtime/probes, configs
 tools -> runtime, integrations, configs
 runtime -> configs

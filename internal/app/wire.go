@@ -12,6 +12,7 @@ import (
 
 	agentctx "github.com/vigo999/ms-cli/agent/context"
 	"github.com/vigo999/ms-cli/agent/loop"
+	"github.com/vigo999/ms-cli/agent/session"
 	"github.com/vigo999/ms-cli/configs"
 	"github.com/vigo999/ms-cli/integrations/llm"
 	openai "github.com/vigo999/ms-cli/integrations/llm/openai"
@@ -23,7 +24,6 @@ import (
 	"github.com/vigo999/ms-cli/tools/fs"
 	"github.com/vigo999/ms-cli/tools/shell"
 	skillstool "github.com/vigo999/ms-cli/tools/skills"
-	"github.com/vigo999/ms-cli/trace"
 	"github.com/vigo999/ms-cli/ui/model"
 	"github.com/vigo999/ms-cli/ui/slash"
 	wtrain "github.com/vigo999/ms-cli/workflow/train"
@@ -35,19 +35,20 @@ const Version = "MindSpore AI Infra Agent CLI. v0.2.0"
 
 // Application is the top-level composition container.
 type Application struct {
-	Engine       *loop.Engine
-	EventCh      chan model.Event
-	Demo         bool
-	llmReady     bool
-	WorkDir      string
-	RepoURL      string
-	Config       *configs.Config
-	provider     llm.Provider
-	toolRegistry *tools.Registry
-	ctxManager   *agentctx.Manager
-	permService  permission.PermissionService
-	stateManager *configs.StateManager
-	traceWriter  trace.Writer
+	Engine        *loop.Engine
+	EventCh       chan model.Event
+	Demo          bool
+	llmReady      bool
+	WorkDir       string
+	RepoURL       string
+	Config        *configs.Config
+	provider      llm.Provider
+	toolRegistry  *tools.Registry
+	ctxManager    *agentctx.Manager
+	permService   permission.PermissionService
+	stateManager  *configs.StateManager
+	session       *session.Session
+	replayBacklog []model.Event
 
 	// Skills
 	skillLoader *skills.Loader
@@ -69,11 +70,13 @@ type Application struct {
 
 // BootstrapConfig holds bootstrap configuration.
 type BootstrapConfig struct {
-	Demo       bool
-	ConfigPath string
-	URL        string
-	Model      string
-	Key        string
+	Demo            bool
+	ConfigPath      string
+	URL             string
+	Model           string
+	Key             string
+	Resume          bool
+	ResumeSessionID string
 }
 
 // Wire builds and returns the Application.
@@ -160,17 +163,40 @@ func Wire(cfg BootstrapConfig) (*Application, error) {
 		MaxHistoryRounds:    config.Context.MaxHistoryRounds,
 	})
 
-	traceWriter, err := trace.NewTimestampWriter(filepath.Join(workDir, ".cache"))
-	if err != nil {
-		return nil, fmt.Errorf("init trace writer: %w", err)
-	}
-
 	// Build system prompt: base + skill summaries.
 	systemPrompt := loop.DefaultSystemPrompt()
 	if summaries := skillLoader.List(); len(summaries) > 0 {
 		systemPrompt += "\n\n## Available Skills\n\n" +
 			"Use the load_skill tool to load a skill when the user's task matches one:\n\n" +
 			skills.FormatSummaries(summaries)
+	}
+
+	var (
+		runtimeSession *session.Session
+		replayBacklog  []model.Event
+	)
+	if cfg.Resume {
+		if strings.TrimSpace(cfg.ResumeSessionID) != "" {
+			runtimeSession, err = session.LoadByID(workDir, cfg.ResumeSessionID)
+			if err != nil {
+				return nil, fmt.Errorf("load session %s: %w", cfg.ResumeSessionID, err)
+			}
+		} else {
+			runtimeSession, err = session.LoadLatest(workDir)
+			if err != nil {
+				return nil, fmt.Errorf("load latest session: %w", err)
+			}
+		}
+		systemPrompt, restoredMessages := runtimeSession.RestoreContext()
+		ctxManager.SetSystemPrompt(systemPrompt)
+		ctxManager.SetNonSystemMessages(restoredMessages)
+		replayBacklog = runtimeSession.ReplayEvents()
+	} else {
+		runtimeSession, err = session.Create(workDir, systemPrompt)
+		if err != nil {
+			return nil, fmt.Errorf("create session: %w", err)
+		}
+		ctxManager.SetSystemPrompt(systemPrompt)
 	}
 
 	engineCfg := loop.EngineConfig{
@@ -182,26 +208,27 @@ func Wire(cfg BootstrapConfig) (*Application, error) {
 	}
 	engine := loop.NewEngine(engineCfg, provider, toolRegistry)
 	engine.SetContextManager(ctxManager)
-	engine.SetTraceWriter(traceWriter)
+	engine.SetTrajectoryRecorder(newTrajectoryRecorder(runtimeSession))
 
 	permService := permission.NewDefaultPermissionService(config.Permissions)
 	engine.SetPermissionService(permService)
 
 	return &Application{
-		Engine:       engine,
-		EventCh:      make(chan model.Event, 64),
-		Demo:         cfg.Demo,
-		WorkDir:      workDir,
-		RepoURL:      "github.com/vigo999/ms-cli",
-		Config:       config,
-		provider:     provider,
-		toolRegistry: toolRegistry,
-		ctxManager:   ctxManager,
-		permService:  permService,
-		stateManager: stateManager,
-		traceWriter:  traceWriter,
-		llmReady:     llmReady,
-		skillLoader:  skillLoader,
+		Engine:        engine,
+		EventCh:       make(chan model.Event, 64),
+		Demo:          cfg.Demo,
+		WorkDir:       workDir,
+		RepoURL:       "github.com/vigo999/ms-cli",
+		Config:        config,
+		provider:      provider,
+		toolRegistry:  toolRegistry,
+		ctxManager:    ctxManager,
+		permService:   permService,
+		stateManager:  stateManager,
+		session:       runtimeSession,
+		replayBacklog: replayBacklog,
+		llmReady:      llmReady,
+		skillLoader:   skillLoader,
 	}, nil
 }
 
@@ -239,7 +266,7 @@ func (a *Application) SetProvider(providerName, modelName, apiKey string) error 
 	newEngine := loop.NewEngine(engineCfg, provider, a.toolRegistry)
 	newEngine.SetContextManager(a.ctxManager)
 	newEngine.SetPermissionService(a.permService)
-	newEngine.SetTraceWriter(a.traceWriter)
+	newEngine.SetTrajectoryRecorder(newTrajectoryRecorder(a.session))
 
 	a.Engine = newEngine
 	a.provider = provider
@@ -290,6 +317,41 @@ func initProvider(cfg configs.ModelConfig) (llm.Provider, error) {
 		return nil, err
 	}
 	return client, nil
+}
+
+func newTrajectoryRecorder(s *session.Session) *loop.TrajectoryRecorder {
+	return &loop.TrajectoryRecorder{
+		RecordUserInput: func(content string) error {
+			if s == nil {
+				return nil
+			}
+			return s.AppendUserInput(content)
+		},
+		RecordAssistant: func(content string) error {
+			if s == nil {
+				return nil
+			}
+			return s.AppendAssistant(content)
+		},
+		RecordToolCall: func(tc llm.ToolCall) error {
+			if s == nil {
+				return nil
+			}
+			return s.AppendToolCall(tc)
+		},
+		RecordToolResult: func(tc llm.ToolCall, content string) error {
+			if s == nil {
+				return nil
+			}
+			return s.AppendToolResult(tc.ID, tc.Function.Name, content)
+		},
+		RecordSkillActivate: func(skillName string) error {
+			if s == nil {
+				return nil
+			}
+			return s.AppendSkillActivation(skillName)
+		},
+	}
 }
 
 func initTools(cfg *configs.Config, workDir string) *tools.Registry {

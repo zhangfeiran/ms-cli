@@ -418,8 +418,18 @@ func (a *Application) cmdSkill(args []string) {
 			},
 		},
 	}
-	_ = a.ctxManager.AddMessage(assistantMsg)
-	_ = a.ctxManager.AddMessage(llm.NewToolMessage(toolCallID, content))
+	if err := a.addContextMessages(assistantMsg, llm.NewToolMessage(toolCallID, content)); err != nil {
+		a.emitToolError("load_skill", "Failed to activate skill %q: %v", skillName, err)
+		return
+	}
+	if a.session != nil {
+		if err := a.session.AppendSkillActivation(skillName); err != nil {
+			a.emitToolError("session", "Failed to persist skill activation: %v", err)
+		}
+		if err := a.persistSessionSnapshot(); err != nil {
+			a.emitToolError("session", "Failed to persist session snapshot: %v", err)
+		}
+	}
 	a.EventCh <- model.Event{
 		Type:     model.ToolSkill,
 		ToolName: "load_skill",

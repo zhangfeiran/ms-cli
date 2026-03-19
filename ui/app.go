@@ -494,6 +494,9 @@ func (a App) handleEvent(ev model.Event) (tea.Model, tea.Cmd) {
 	var eventCmd tea.Cmd
 
 	switch ev.Type {
+	case model.UserInput:
+		a.state = a.state.WithMessage(model.Message{Kind: model.MsgUser, Content: ev.Message})
+
 	case model.AgentThinking:
 		a.state = a.state.WithThinking(true)
 		if !a.hasThinkingMessage() {
@@ -590,6 +593,9 @@ func (a App) handleEvent(ev model.Event) (tea.Model, tea.Cmd) {
 			Kind: model.MsgTool, ToolName: displayToolName(ev.ToolName),
 			Display: model.DisplayError, Content: truncateToolContent(ev.Message),
 		})
+
+	case model.ToolReplay:
+		a.state = a.state.WithMessage(replayToolMessage(ev))
 
 	case model.AnalysisReady:
 		a.state = a.state.WithMessage(model.Message{Kind: model.MsgAgent, Content: ev.Message})
@@ -1653,6 +1659,24 @@ func displayToolName(name string) string {
 			return "Tool"
 		}
 		return name
+	}
+}
+
+func replayToolMessage(ev model.Event) model.Message {
+	display := model.DisplayCollapsed
+	content := ev.Message
+
+	switch strings.TrimSpace(ev.ToolName) {
+	case "shell", "edit", "write":
+		display = model.DisplayExpanded
+		content = truncateToolContent(ev.Message)
+	}
+
+	return model.Message{
+		Kind:     model.MsgTool,
+		ToolName: displayToolName(ev.ToolName),
+		Display:  display,
+		Content:  content,
 	}
 }
 

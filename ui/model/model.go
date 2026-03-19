@@ -55,6 +55,8 @@ const (
 	AnalysisReady   EventType = "AnalysisReady"
 	AgentReply      EventType = "AgentReply"
 	AgentThinking   EventType = "AgentThinking"
+	UserInput       EventType = "UserInput"
+	ToolReplay      EventType = "ToolReplay"
 	TokenUpdate     EventType = "TokenUpdate"
 	ToolRead        EventType = "ToolRead"
 	ToolGrep        EventType = "ToolGrep"

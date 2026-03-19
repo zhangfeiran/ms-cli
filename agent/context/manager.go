@@ -217,6 +217,29 @@ func (m *Manager) GetNonSystemMessages() []llm.Message {
 	return result
 }
 
+// SetNonSystemMessages replaces all non-system messages.
+func (m *Manager) SetNonSystemMessages(msgs []llm.Message) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.messages = make([]llm.Message, len(msgs))
+	copy(m.messages, msgs)
+
+	if m.budget != nil {
+		m.budget.SetHistoryUsage(m.tokenizer.EstimateMessages(m.messages))
+	}
+
+	m.stats.MessageCount = len(m.messages)
+	m.stats.ToolCallCount = 0
+	for _, msg := range m.messages {
+		if msg.Role == "tool" {
+			m.stats.ToolCallCount++
+		}
+	}
+
+	m.recalculateUsage()
+}
+
 // Clear clears all messages except system prompt.
 func (m *Manager) Clear() {
 	m.mu.Lock()

@@ -77,7 +77,7 @@ ms-cli/
     fs/                    filesystem tool implementations
     shell/                 shell tool wrapper
   ui/                      Bubble Tea app, panels, slash commands, model
-  trace/                   execution trace writing
+  agent/session/           session state, trajectory persistence, resume
   report/                  summary generation
   configs/                 config loading and shared config types
   test/mocks/              test doubles
@@ -106,7 +106,7 @@ Keep dependencies flowing downward only. Avoid upward or circular imports.
 
 ```text
 cmd/ms-cli -> internal/app -> agent, workflow, ui
-agent -> permission, integrations, configs, trace
+agent -> permission, integrations, configs
 workflow -> internal/train, runtime/probes, configs
 workflow/train -> internal/train, runtime/probes (NOT ui/model)
 runtime/probes -> internal/train
@@ -155,7 +155,7 @@ Examples:
 - Do not merge unrelated layers just to save files.
 - Do not bypass permission checks for tool or shell execution.
 - Do not import UI packages from agent, tools, or runtime layers.
-- Do not mix trace data with future user-facing artifact handling.
+- Do not split session persistence into parallel trace-style subsystems.
 - Do not update docs by copying stale structure; verify against the current tree first.
 
 ## Root Agent Files
