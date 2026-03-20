@@ -15,8 +15,8 @@ import (
 	"github.com/vigo999/ms-cli/agent/session"
 	"github.com/vigo999/ms-cli/configs"
 	"github.com/vigo999/ms-cli/integrations/llm"
-	"github.com/vigo999/ms-cli/integrations/skills"
 	providerpkg "github.com/vigo999/ms-cli/integrations/llm/provider"
+	"github.com/vigo999/ms-cli/integrations/skills"
 	itrain "github.com/vigo999/ms-cli/internal/train"
 	"github.com/vigo999/ms-cli/permission"
 	rshell "github.com/vigo999/ms-cli/runtime/shell"
@@ -63,6 +63,7 @@ type Application struct {
 	trainRunID      uint64
 	trainTasks      map[uint64]struct{}
 	trainController *wtrain.Controller
+	pendingTrain    *pendingTrainStart
 	trainMu         sync.RWMutex
 }
 
