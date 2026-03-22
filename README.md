@@ -1,46 +1,78 @@
 # ms-cli
 
-AI infrastructure agent
+AI infrastructure agent for MindSpore development.
 
-## Documentation Map
+## Install
 
-Current documentation in [`docs/`](docs/) is split into:
+### One-liner (recommended)
 
-- shared repository policy: [`docs/agent-contributor-guide.md`](docs/agent-contributor-guide.md)
-- current architecture references:
-  - [`docs/arch.md`](docs/arch.md)
-- active refactor and workstream plans:
-  - [`docs/impl-guide/ms-cli-refactor-3.md`](docs/impl-guide/ms-cli-refactor-3.md)
-  - [`docs/impl-guide/ms-skills-whole-update-plan.md`](docs/impl-guide/ms-skills-whole-update-plan.md)
-  - [`docs/impl-guide/ms-factory-struct-v0.1.md`](docs/impl-guide/ms-factory-struct-v0.1.md)
-  - [`docs/features-backlog.md`](docs/features-backlog.md)
-  - [`docs/how-to-provide-plan-proposal.md`](docs/how-to-provide-plan-proposal.md)
+```bash
+curl -fsSL https://raw.githubusercontent.com/vigo999/ms-cli/main/scripts/install.sh | bash
+```
 
-Important:
+This downloads the latest release binary to `~/.ms-cli/bin/mscli` and configures your PATH.
 
-- architecture docs describe the current checkout
-- refactor/workstream docs describe planned target states
-- if they conflict, treat the current code as authoritative
+### Build from source
 
-## Prerequisites
+Requires Go 1.24.2+.
 
-- Go 1.24.2+ (see `go.mod`)
+```bash
+git clone https://github.com/vigo999/ms-cli.git
+cd ms-cli
+go build -o mscli ./cmd/ms-cli
+./mscli
+```
 
 ## Quick Start
 
-Build:
-
 ```bash
-go build -o ms-cli ./cmd/ms-cli
+# Set your LLM API key
+export MSCLI_API_KEY=sk-...
+
+# Run
+mscli
 ```
 
-Run real mode:
+### Slash Commands
+
+| Command | Description |
+|---------|-------------|
+| `/project` | Show project status (overview, milestones, tasks, support) |
+| `/project add tasks "title" --owner X --due 03-25` | Add a task (admin) |
+| `/project add milestones "title" --progress 50` | Add a milestone (admin) |
+| `/project add support "feature name"` | Add a support entry (admin) |
+| `/project update <id> --progress 80` | Update a task by ID (admin) |
+| `/project update "title" --progress 80` | Update a milestone by title (admin) |
+| `/project rm <id\|title>` | Remove an item (admin) |
+| `/project overview --phase X --owner Y` | Edit project overview (admin) |
+| `/bugs` | List bugs |
+| `/report <title>` | Report a bug |
+| `/claim <id>` | Claim a bug |
+| `/dock` | Show bug dashboard |
+| `/login <token>` | Login to the bug/project server |
+| `/model <provider:model>` | Switch LLM model |
+| `/clear` | Clear chat |
+
+### Server Setup
+
+The bug and project server runs separately:
 
 ```bash
-go run ./cmd/ms-cli
-# or
-./ms-cli
+# Build and deploy
+go build -o /opt/mscli/ms-cli-server ./cmd/ms-cli-server
+
+# Start with config
+cd /opt/mscli && ./ms-cli-server -config ./server.yaml
 ```
+
+See `configs/server.yaml` for server configuration (auth tokens, database, listen address).
+
+## Documentation
+
+- Architecture: [`docs/arch.md`](docs/arch.md)
+- Contributor guide: [`docs/agent-contributor-guide.md`](docs/agent-contributor-guide.md)
+- Implementation plans: [`docs/impl-guide/`](docs/impl-guide/)
+- Feature backlog: [`docs/features-backlog.md`](docs/features-backlog.md)
 
 ### Command-Line Options
 
@@ -137,32 +169,10 @@ Inside CLI:
 - `/model openai-compatible:gpt-4o-mini`
 - `/model anthropic:claude-3-5-sonnet`
 
-## Repository Structure
-
-See [`docs/arch.md`](docs/arch.md) for the current architecture and package map.
-
-The repository is under active refactor, so this README intentionally does not
-duplicate a full package tree. Use the linked architecture docs above as the
-source of truth for either:
-
-- the current checkout layout, or
-- explicitly labeled target-state planning docs under [`docs/`](docs/)
-
 ## Known Limitations
 
-- The real-mode engine flow is still minimal/stub-oriented.
 - Running Bubble Tea in non-interactive shells may fail with `/dev/tty` errors.
-
-## Planning Workstreams
-
-The repository currently tracks three related planning streams:
-
-- Workstream A: `ms-cli` refactor into a thinner agent runtime
-- Workstream B: `ms-skills` update for prompt-oriented domain skills
-- Workstream C: incubating Factory schemas, cards, and pack format
-
-These plans live under [`docs/`](docs/) and are intended to guide staged
-implementation across `ms-cli`, `ms-skills`, and the future Factory split.
+- The bug/project server requires SQLite (CGO enabled).
 
 ## Architecture Rule
 
