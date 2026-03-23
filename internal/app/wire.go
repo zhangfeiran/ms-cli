@@ -219,6 +219,7 @@ func Wire(cfg BootstrapConfig) (*Application, error) {
 		ctxManager:   ctxManager,
 		permService:  permService,
 		session:       runtimeSession,
+		replayBacklog: replayBacklog,
 		llmReady:     llmReady,
 		skillLoader:  skillLoader,
 	}
