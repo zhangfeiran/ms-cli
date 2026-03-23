@@ -151,15 +151,25 @@ func (c *Compactor) compactSummarize(messages []llm.Message, systemMsg *llm.Mess
 		return messages, CompactResult{Kept: len(messages), Removed: 0}
 	}
 
-	kept := keepRecentMessages(messages, keepCount)
-	toSummarize := messages[:len(messages)-len(kept)]
+	groups := groupMessages(messages)
+	keptGroups := keepRecentMessageGroups(groups, keepCount)
+	toSummarize := flattenMessageGroups(excludeMessageGroups(groups, keptGroups))
+	if len(toSummarize) == 0 {
+		kept := flattenMessageGroups(keptGroups)
+		return kept, CompactResult{
+			Kept:     len(kept),
+			Removed:  0,
+			Strategy: CompactStrategySummarize,
+			Summary:  "No messages summarized",
+		}
+	}
 
 	// 生成摘要
 	summary := c.generateSummary(toSummarize)
 	summaryMsg := llm.NewSystemMessage(summary)
 
 	// 保留的消息
-	result := append([]llm.Message{summaryMsg}, kept...)
+	result := append([]llm.Message{summaryMsg}, flattenMessageGroups(keptGroups)...)
 
 	return result, CompactResult{
 		Kept:     len(result),
@@ -206,11 +216,7 @@ func (c *Compactor) compactHybrid(messages []llm.Message, systemMsg *llm.Message
 
 	groups := groupMessages(messages)
 	recentGroups := keepRecentMessageGroups(groups, recentCount)
-	oldGroupCount := len(groups) - len(recentGroups)
-	if oldGroupCount < 0 {
-		oldGroupCount = 0
-	}
-	oldGroups := groups[:oldGroupCount]
+	oldGroups := excludeMessageGroups(groups, recentGroups)
 	prioritized := c.prioritizeGroups(oldGroups, len(messages))
 
 	// 保留高优先级的旧消息
@@ -224,20 +230,11 @@ func (c *Compactor) compactHybrid(messages []llm.Message, systemMsg *llm.Message
 
 	// 如果有需要摘要的旧消息，添加摘要
 	if len(oldGroups) > len(highPriorityOld) {
-		keptOld := make(map[int]struct{}, len(highPriorityOld))
-		for _, group := range highPriorityOld {
-			keptOld[group.Start] = struct{}{}
+		toSummarize := flattenMessageGroups(excludeMessageGroups(oldGroups, highPriorityOld))
+		if len(toSummarize) > 0 {
+			summary := c.generateSummary(toSummarize)
+			result = append(result, llm.NewSystemMessage(summary))
 		}
-
-		toSummarize := make([]llm.Message, 0)
-		for _, group := range oldGroups {
-			if _, ok := keptOld[group.Start]; ok {
-				continue
-			}
-			toSummarize = append(toSummarize, group.Messages...)
-		}
-		summary := c.generateSummary(toSummarize)
-		result = append(result, llm.NewSystemMessage(summary))
 	}
 
 	// 添加保留的高优先级旧消息
@@ -365,23 +362,34 @@ func keepRecentMessageGroups(groups []messageGroup, maxKeep int) []messageGroup 
 		return nil
 	}
 
-	kept := make([]messageGroup, 0, len(groups))
+	pinned := pinnedMessageGroups(groups)
+	pinnedSet := messageGroupSet(pinned)
+	kept := append([]messageGroup{}, pinned...)
+	remainingBudget := maxKeep - countMessagesInGroups(pinned)
+	if remainingBudget <= 0 {
+		sortMessageGroupsByStart(kept)
+		return kept
+	}
+
+	recent := make([]messageGroup, 0, len(groups))
 	keptMessages := 0
 	for i := len(groups) - 1; i >= 0; i-- {
+		if _, ok := pinnedSet[groups[i].Start]; ok {
+			continue
+		}
 		groupSize := len(groups[i].Messages)
-		if keptMessages+groupSize > maxKeep && len(kept) > 0 {
+		if keptMessages+groupSize > remainingBudget && len(recent) > 0 {
 			break
 		}
-		kept = append(kept, groups[i])
+		recent = append(recent, groups[i])
 		keptMessages += groupSize
-		if keptMessages >= maxKeep {
+		if keptMessages >= remainingBudget {
 			break
 		}
 	}
 
-	sort.Slice(kept, func(i, j int) bool {
-		return kept[i].Start < kept[j].Start
-	})
+	kept = append(kept, recent...)
+	sortMessageGroupsByStart(kept)
 	return kept
 }
 
@@ -411,26 +419,107 @@ func (c *Compactor) prioritizeGroups(groups []messageGroup, totalMessages int) [
 }
 
 func selectPrioritizedGroups(groups []prioritizedGroup, maxKeep int) []messageGroup {
-	if len(groups) == 0 || maxKeep <= 0 {
+	if len(groups) == 0 {
 		return nil
 	}
 
-	selected := make([]messageGroup, 0, len(groups))
+	pinned := make([]messageGroup, 0)
+	pinnedSet := make(map[int]struct{})
+	for _, group := range groups {
+		if !isPinnedMessageGroup(group.Group) {
+			continue
+		}
+		pinned = append(pinned, group.Group)
+		pinnedSet[group.Group.Start] = struct{}{}
+	}
+
+	selected := append([]messageGroup{}, pinned...)
+	remainingBudget := maxKeep - countMessagesInGroups(pinned)
+	if remainingBudget <= 0 {
+		sortMessageGroupsByStart(selected)
+		return selected
+	}
+
 	keptMessages := 0
 	for _, group := range groups {
+		if _, ok := pinnedSet[group.Group.Start]; ok {
+			continue
+		}
 		groupSize := len(group.Group.Messages)
-		if keptMessages+groupSize > maxKeep && len(selected) > 0 {
+		if keptMessages+groupSize > remainingBudget && len(selected) > len(pinned) {
 			continue
 		}
 		selected = append(selected, group.Group)
 		keptMessages += groupSize
-		if keptMessages >= maxKeep {
+		if keptMessages >= remainingBudget {
 			break
 		}
 	}
 
-	sort.Slice(selected, func(i, j int) bool {
-		return selected[i].Start < selected[j].Start
-	})
+	sortMessageGroupsByStart(selected)
 	return selected
+}
+
+func excludeMessageGroups(groups, excluded []messageGroup) []messageGroup {
+	if len(groups) == 0 {
+		return nil
+	}
+	if len(excluded) == 0 {
+		result := make([]messageGroup, len(groups))
+		copy(result, groups)
+		return result
+	}
+
+	excludedSet := messageGroupSet(excluded)
+	result := make([]messageGroup, 0, len(groups))
+	for _, group := range groups {
+		if _, ok := excludedSet[group.Start]; ok {
+			continue
+		}
+		result = append(result, group)
+	}
+	return result
+}
+
+func pinnedMessageGroups(groups []messageGroup) []messageGroup {
+	result := make([]messageGroup, 0)
+	for _, group := range groups {
+		if isPinnedMessageGroup(group) {
+			result = append(result, group)
+		}
+	}
+	return result
+}
+
+func isPinnedMessageGroup(group messageGroup) bool {
+	for _, msg := range group.Messages {
+		for _, tc := range msg.ToolCalls {
+			if tc.Function.Name == "load_skill" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func countMessagesInGroups(groups []messageGroup) int {
+	total := 0
+	for _, group := range groups {
+		total += len(group.Messages)
+	}
+	return total
+}
+
+func messageGroupSet(groups []messageGroup) map[int]struct{} {
+	result := make(map[int]struct{}, len(groups))
+	for _, group := range groups {
+		result[group.Start] = struct{}{}
+	}
+	return result
+}
+
+func sortMessageGroupsByStart(groups []messageGroup) {
+	sort.Slice(groups, func(i, j int) bool {
+		return groups[i].Start < groups[j].Start
+	})
 }
