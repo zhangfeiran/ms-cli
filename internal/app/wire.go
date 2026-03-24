@@ -136,7 +136,11 @@ func Wire(cfg BootstrapConfig) (*Application, error) {
 	}
 	syncedSkillsDir := ""
 	if strings.TrimSpace(homeDir) != "" {
-		repoSync := skills.NewDefaultRepoSync(homeDir)
+		repoSync := skills.NewRepoSync(skills.RepoSyncConfig{
+			HomeDir: homeDir,
+			RepoURL: config.Skills.Repo,
+			Branch:  config.Skills.Revision,
+		})
 		syncedSkillsDir = repoSync.SkillsDir()
 		if err := repoSync.Sync(); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: sync shared skills repo: %v\n", err)

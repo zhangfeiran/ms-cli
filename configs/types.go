@@ -156,7 +156,7 @@ func DefaultConfig() *Config {
 		},
 		Skills: SkillsConfig{
 			Repo:      "https://github.com/vigo999/mindspore-skills",
-			Revision:  "refactor-arch-1.0",
+			Revision:  "refactor-arch-3.0",
 			CacheDir:  ".cache/skills",
 			Workflows: []string{},
 		},

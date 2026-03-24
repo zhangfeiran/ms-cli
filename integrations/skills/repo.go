@@ -20,7 +20,7 @@ import (
 
 const (
 	DefaultRepoURL      = "https://github.com/vigo999/mindspore-skills"
-	DefaultRepoBranch   = "refactor-arch-1.0"
+	DefaultRepoBranch   = "refactor-arch-3.0"
 	defaultRepoName     = "mindspore-skills"
 	defaultSkillsDir    = "skills"
 	defaultCommitFile   = ".ms-cli-commit"
@@ -32,6 +32,13 @@ const (
 // RepoSync manages skills repository sync.
 type RepoSync interface {
 	Sync() error
+}
+
+// RepoSyncConfig controls which skills repo/branch is synced locally.
+type RepoSyncConfig struct {
+	HomeDir string
+	RepoURL string
+	Branch  string
 }
 
 // DefaultRepoSync keeps the bundled skills repo fresh under ~/.ms-cli.
@@ -49,10 +56,23 @@ type DefaultRepoSync struct {
 
 // NewDefaultRepoSync creates the default startup syncer for the shared skills repo.
 func NewDefaultRepoSync(homeDir string) *DefaultRepoSync {
+	return NewRepoSync(RepoSyncConfig{HomeDir: homeDir})
+}
+
+// NewRepoSync creates a startup syncer using the provided repo settings.
+func NewRepoSync(cfg RepoSyncConfig) *DefaultRepoSync {
+	repoURL := strings.TrimSpace(cfg.RepoURL)
+	if repoURL == "" {
+		repoURL = DefaultRepoURL
+	}
+	branch := strings.TrimSpace(cfg.Branch)
+	if branch == "" {
+		branch = DefaultRepoBranch
+	}
 	return &DefaultRepoSync{
-		homeDir:     strings.TrimSpace(homeDir),
-		repoURL:     DefaultRepoURL,
-		branch:      DefaultRepoBranch,
+		homeDir:     strings.TrimSpace(cfg.HomeDir),
+		repoURL:     repoURL,
+		branch:      branch,
 		skipInTests: true,
 		httpClient: &http.Client{
 			Timeout: defaultHTTPTimeout,
@@ -252,7 +272,7 @@ func (s *DefaultRepoSync) localGitCommit(repoDir string) (string, error) {
 }
 
 func (s *DefaultRepoSync) cloneRepo(repoDir string) error {
-	if _, err := s.runCommand("git", "clone", "--branch", s.branch, "--single-branch", s.repoURL, repoDir); err != nil {
+	if _, err := s.runCommand("git", "clone", "--branch", s.branch, s.repoURL, repoDir); err != nil {
 		return fmt.Errorf("git clone %s@%s: %w", s.repoURL, s.branch, err)
 	}
 	return nil
@@ -278,7 +298,7 @@ func (s *DefaultRepoSync) cloneRepoToTemp(parentDir string) (string, string, err
 	}
 
 	cloneDir := filepath.Join(tempRoot, defaultRepoName)
-	if _, err := s.runCommand("git", "clone", "--branch", s.branch, "--single-branch", s.repoURL, cloneDir); err != nil {
+	if _, err := s.runCommand("git", "clone", "--branch", s.branch, s.repoURL, cloneDir); err != nil {
 		_ = os.RemoveAll(tempRoot)
 		return "", "", fmt.Errorf("git clone %s@%s: %w", s.repoURL, s.branch, err)
 	}
