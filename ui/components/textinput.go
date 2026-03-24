@@ -16,17 +16,20 @@ var (
 	sugSelDescStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("117"))
 )
 
+const maxVisibleSuggestions = 8
+
 // TextInput wraps the bubbles text input for the chat prompt.
 type TextInput struct {
-	Model           textinput.Model
-	slashRegistry   *slash.Registry
-	showSuggestions bool
-	slashMode       bool // true once suggestions have been shown, until submit/esc
-	suggestions     []string
-	selectedIdx     int
-	history         []string
-	historyIndex    int
-	historyDraft    string
+	Model            textinput.Model
+	slashRegistry    *slash.Registry
+	showSuggestions  bool
+	slashMode        bool // true once suggestions have been shown, until submit/esc
+	suggestions      []string
+	selectedIdx      int
+	suggestionOffset int
+	history          []string
+	historyIndex     int
+	historyDraft     string
 }
 
 // NewTextInput creates a focused text input with "> " prompt.
@@ -55,6 +58,7 @@ func (t TextInput) Reset() TextInput {
 	// Keep slashMode — it gets cleared when the command result arrives.
 	t.suggestions = nil
 	t.selectedIdx = 0
+	t.suggestionOffset = 0
 	t.historyIndex = -1
 	t.historyDraft = ""
 	return t
@@ -95,6 +99,7 @@ func (t TextInput) Update(msg tea.Msg) (TextInput, tea.Cmd) {
 					// Wrap to last
 					t.selectedIdx = len(t.suggestions) - 1
 				}
+				t.syncSuggestionWindow()
 				return t, nil
 			case "down":
 				if t.selectedIdx < len(t.suggestions)-1 {
@@ -103,6 +108,7 @@ func (t TextInput) Update(msg tea.Msg) (TextInput, tea.Cmd) {
 					// Wrap to first
 					t.selectedIdx = 0
 				}
+				t.syncSuggestionWindow()
 				return t, nil
 			case "tab", "enter":
 				// Accept selected suggestion
@@ -112,6 +118,7 @@ func (t TextInput) Update(msg tea.Msg) (TextInput, tea.Cmd) {
 					t.Model.SetCursor(len(val))
 					t.showSuggestions = false
 					t.suggestions = nil
+					t.suggestionOffset = 0
 				}
 				return t, nil
 			case "esc":
@@ -119,6 +126,7 @@ func (t TextInput) Update(msg tea.Msg) (TextInput, tea.Cmd) {
 				t.showSuggestions = false
 				t.slashMode = false
 				t.suggestions = nil
+				t.suggestionOffset = 0
 				return t, nil
 			}
 		}
@@ -166,6 +174,7 @@ func (t TextInput) PrevHistory() TextInput {
 	t.showSuggestions = false
 	t.slashMode = false
 	t.suggestions = nil
+	t.suggestionOffset = 0
 	return t
 }
 
@@ -181,6 +190,7 @@ func (t TextInput) NextHistory() TextInput {
 		t.showSuggestions = false
 		t.slashMode = false
 		t.suggestions = nil
+		t.suggestionOffset = 0
 		return t
 	}
 	t.historyIndex = -1
@@ -190,6 +200,7 @@ func (t TextInput) NextHistory() TextInput {
 	t.showSuggestions = false
 	t.slashMode = false
 	t.suggestions = nil
+	t.suggestionOffset = 0
 	return t
 }
 
@@ -204,6 +215,7 @@ func (t *TextInput) updateSuggestions() {
 		t.slashMode = false
 		t.suggestions = nil
 		t.selectedIdx = 0
+		t.suggestionOffset = 0
 		return
 	}
 
@@ -218,6 +230,11 @@ func (t *TextInput) updateSuggestions() {
 	if t.selectedIdx >= len(t.suggestions) {
 		t.selectedIdx = 0
 	}
+	if len(t.suggestions) == 0 {
+		t.suggestionOffset = 0
+		return
+	}
+	t.syncSuggestionWindow()
 }
 
 // View renders the input with optional suggestions.
@@ -226,7 +243,7 @@ func (t TextInput) View() string {
 
 	if !t.showSuggestions || len(t.suggestions) == 0 {
 		if t.slashMode {
-			return inputView + strings.Repeat("\n", 8)
+			return inputView + strings.Repeat("\n", maxVisibleSuggestions)
 		}
 		return inputView
 	}
@@ -236,10 +253,17 @@ func (t TextInput) View() string {
 	sb.WriteString(inputView)
 	sb.WriteString("\n")
 
-	for i, sug := range t.suggestions {
-		if i >= 8 { // Limit to 8 suggestions
-			break
-		}
+	start := t.suggestionOffset
+	if start < 0 {
+		start = 0
+	}
+	end := start + maxVisibleSuggestions
+	if end > len(t.suggestions) {
+		end = len(t.suggestions)
+	}
+
+	for i := start; i < end; i++ {
+		sug := t.suggestions[i]
 
 		// Get command description
 		cmd, ok := t.slashRegistry.Get(sug)
@@ -261,9 +285,9 @@ func (t TextInput) View() string {
 
 		sb.WriteString("\n")
 	}
-	// Pad remaining rows to fill fixed 8-row area.
-	rendered := min(len(t.suggestions), 8)
-	for i := rendered; i < 8; i++ {
+	// Pad remaining rows to fill the fixed slash suggestion area.
+	rendered := end - start
+	for i := rendered; i < maxVisibleSuggestions; i++ {
 		sb.WriteString("\n")
 	}
 
@@ -273,7 +297,7 @@ func (t TextInput) View() string {
 // Height returns the total height including suggestions area.
 func (t TextInput) Height() int {
 	if t.slashMode {
-		return 1 + 8
+		return 1 + maxVisibleSuggestions
 	}
 	return 1
 }
@@ -288,10 +312,43 @@ func (t TextInput) ClearSlashMode() TextInput {
 	t.slashMode = false
 	t.showSuggestions = false
 	t.suggestions = nil
+	t.suggestionOffset = 0
 	return t
 }
 
 // HasSuggestions returns true if there are visible suggestion candidates.
 func (t TextInput) HasSuggestions() bool {
 	return t.showSuggestions && len(t.suggestions) > 0
+}
+
+func (t *TextInput) syncSuggestionWindow() {
+	if len(t.suggestions) == 0 {
+		t.suggestionOffset = 0
+		return
+	}
+
+	if t.selectedIdx < 0 {
+		t.selectedIdx = 0
+	}
+	if t.selectedIdx >= len(t.suggestions) {
+		t.selectedIdx = len(t.suggestions) - 1
+	}
+
+	if t.selectedIdx < t.suggestionOffset {
+		t.suggestionOffset = t.selectedIdx
+	}
+	if t.selectedIdx >= t.suggestionOffset+maxVisibleSuggestions {
+		t.suggestionOffset = t.selectedIdx - maxVisibleSuggestions + 1
+	}
+
+	maxOffset := len(t.suggestions) - maxVisibleSuggestions
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if t.suggestionOffset > maxOffset {
+		t.suggestionOffset = maxOffset
+	}
+	if t.suggestionOffset < 0 {
+		t.suggestionOffset = 0
+	}
 }
