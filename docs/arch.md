@@ -83,10 +83,13 @@ directly. The LLM plans inline within the agent loop.
 
 ### Skill activation
 
-At startup, `internal/app.Wire(...)` refreshes the shared skills repo into
-`~/.ms-cli/mindspore-skills` (git clone/pull when git is available, archive
-download otherwise) and adds `~/.ms-cli/mindspore-skills/skills` as the
-highest-priority skill search path.
+At startup, `internal/app.Wire(...)` runs a commit-aware sync for the shared
+skills repo under `~/.ms-cli/mindspore-skills`, logs the decisions to the
+terminal, stores the local commit id in the repo directory, compares the local
+commit with the remote branch head through a lightweight GitHub API check, and
+only updates after a `Y/n` confirmation when the commits differ. The synced
+`~/.ms-cli/mindspore-skills/skills` directory remains the highest-priority
+skill search path.
 
 Current slash-skill activation is session-visible, not purely task-scoped.
 `/skill <name>` and `/<name>` preload the skill by injecting a synthetic
