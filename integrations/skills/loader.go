@@ -73,7 +73,8 @@ func (l *Loader) Names() []string {
 
 // Load finds the highest-priority occurrence of the named skill,
 // reads its SKILL.md, strips the YAML frontmatter, and returns the
-// body wrapped in <skill name="...">...</skill> tags.
+// body wrapped in <skill ...>...</skill> tags with absolute source
+// location metadata.
 func (l *Loader) Load(name string) (string, error) {
 	// Iterate in reverse so highest-priority path wins.
 	for i := len(l.paths) - 1; i >= 0; i-- {
@@ -91,7 +92,7 @@ func (l *Loader) Load(name string) (string, error) {
 		if skillName == "" {
 			skillName = name
 		}
-		return wrapContent(skillName, body), nil
+		return wrapContent(skillName, absolutePath(path), body), nil
 	}
 	return "", fmt.Errorf("skill %q not found", name)
 }
@@ -176,7 +177,25 @@ func parseFrontmatter(content string) (SkillMeta, string, error) {
 	return meta, body, nil
 }
 
-// wrapContent wraps skill body in <skill name="...">...</skill> tags.
-func wrapContent(name, body string) string {
-	return fmt.Sprintf("<skill name=%q>\n%s\n</skill>", name, body)
+func absolutePath(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	return abs
+}
+
+// wrapContent wraps skill body in <skill ...>...</skill> tags and includes
+// the absolute skill location so relative references next to SKILL.md are
+// discoverable to the model.
+func wrapContent(name, skillFile, body string) string {
+	skillDir := filepath.Dir(skillFile)
+	return fmt.Sprintf(
+		"<skill name=%q location=%q source=%q>\nThe skill directory is %s. Resolve files mentioned next to SKILL.md from that directory.\n\n%s\n</skill>",
+		name,
+		skillDir,
+		skillFile,
+		skillDir,
+		body,
+	)
 }
