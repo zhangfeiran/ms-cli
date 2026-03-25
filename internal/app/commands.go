@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vigo999/ms-cli/configs"
 	"github.com/vigo999/ms-cli/integrations/llm"
 	"github.com/vigo999/ms-cli/integrations/skills"
 	"github.com/vigo999/ms-cli/permission"
@@ -91,7 +92,16 @@ func (a *Application) cmdModel(args []string) {
 		return
 	}
 
-	modelArg := args[0]
+	modelArg := strings.TrimSpace(strings.Join(args, " "))
+	if isDefaultModelSelectionArg(modelArg) {
+		a.restoreDefaultModel()
+		return
+	}
+	if preset, ok := configs.LookupBuiltinModelPreset(modelArg); ok {
+		a.switchBuiltinPreset(preset)
+		return
+	}
+
 	if strings.Contains(modelArg, ":") {
 		parts := strings.SplitN(modelArg, ":", 2)
 		providerName := llm.NormalizeProvider(parts[0])
@@ -126,22 +136,40 @@ func (a *Application) showCurrentModel() {
 		apiKeyStatus = "set"
 	}
 
+	var builtinLines []string
+	for _, preset := range configs.BuiltinModelPresets() {
+		line := fmt.Sprintf("  /model %s", preset.ID)
+		if label := strings.TrimSpace(preset.Label); label != "" && label != preset.ID {
+			line += fmt.Sprintf("  -> %s", label)
+		}
+		builtinLines = append(builtinLines, line)
+	}
+	if len(builtinLines) == 0 {
+		builtinLines = append(builtinLines, "  (none)")
+	}
+
 	msg := fmt.Sprintf(`Current Model Configuration:
 
+  Source: %s
   Provider: %s
-  URL:   %s
-  Model: %s
-  Key:   %s
+  URL:      %s
+  Model:    %s
+  Key:      %s
 
-To switch model:
+Builtin Model Candidates:
+%s
+
+Other model commands:
   /model <model-name>
   /model <provider>:<model>
+  /model default
 
 Examples:
+  /model kimi-k2.5
   /model gpt-4o
   /model openai-completion:gpt-4o-mini
   /model openai-responses:gpt-4o
-  /model anthropic:claude-3-5-sonnet`, providerName, url, modelName, apiKeyStatus)
+  /model anthropic:claude-3-5-sonnet`, a.currentModelSourceLabel(), providerName, url, modelName, apiKeyStatus, strings.Join(builtinLines, "\n"))
 
 	a.EventCh <- model.Event{Type: model.AgentReply, Message: msg}
 }
@@ -159,15 +187,66 @@ func (a *Application) switchModel(providerName, modelName string) {
 		return
 	}
 
+	a.emitModelUpdate()
+
+	a.EventCh <- model.Event{
+		Type:    model.AgentReply,
+		Message: fmt.Sprintf("Model switched to: %s", a.Config.Model.Model),
+	}
+}
+
+func (a *Application) switchBuiltinPreset(preset configs.BuiltinModelPreset) {
+	a.EventCh <- model.Event{Type: model.AgentThinking}
+
+	if err := a.switchBuiltinModelPreset(preset); err != nil {
+		a.EventCh <- model.Event{
+			Type:     model.ToolError,
+			ToolName: "model",
+			Message:  fmt.Sprintf("Failed to switch builtin model: %v", err),
+		}
+		return
+	}
+
+	a.emitModelUpdate()
+	a.EventCh <- model.Event{
+		Type:    model.AgentReply,
+		Message: fmt.Sprintf("Model switched to builtin preset: %s", preset.Label),
+	}
+}
+
+func (a *Application) restoreDefaultModel() {
+	a.EventCh <- model.Event{Type: model.AgentThinking}
+
+	if err := a.restoreDefaultModelConfig(); err != nil {
+		a.EventCh <- model.Event{
+			Type:     model.ToolError,
+			ToolName: "model",
+			Message:  fmt.Sprintf("Failed to restore default model: %v", err),
+		}
+		return
+	}
+
+	a.emitModelUpdate()
+	a.EventCh <- model.Event{
+		Type:    model.AgentReply,
+		Message: fmt.Sprintf("Model restored to startup config: %s", a.Config.Model.Model),
+	}
+}
+
+func (a *Application) emitModelUpdate() {
 	a.EventCh <- model.Event{
 		Type:    model.ModelUpdate,
 		Message: a.Config.Model.Model,
 		CtxMax:  a.Config.Context.Window,
 	}
+}
 
-	a.EventCh <- model.Event{
-		Type:    model.AgentReply,
-		Message: fmt.Sprintf("Model switched to: %s", a.Config.Model.Model),
+func isDefaultModelSelectionArg(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "default", "env", "reset":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -401,7 +480,7 @@ func (a *Application) cmdHelp() {
   /bugs [status]          List bugs (optional status filter: open, doing)
   /claim <id>             Claim a bug as your lead
   /dock                   Show bug dashboard (open count, ready, recent)
-  /model [model-name]     Show or switch model
+  /model [model-name]     Show preset candidates or switch model
   /test                   Test API connectivity
   /permission [tool] [level]  Manage tool permissions
   /yolo                   Toggle auto-approve mode
@@ -411,11 +490,13 @@ func (a *Application) cmdHelp() {
   /help                   Show this help message
 
 Model Commands:
-  /model                  Show current configuration
+  /model                  Show current configuration and builtin candidates
+  /model kimi-k2.5        Switch to builtin free Kimi preset
   /model gpt-4o           Switch to gpt-4o
   /model openai-completion:gpt-4o
   /model openai-responses:gpt-4o
   /model anthropic:claude-3-5-sonnet
+  /model default          Restore startup env/config model
 
 Permission Commands:
   /permission             Show current permission settings

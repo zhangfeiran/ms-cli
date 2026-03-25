@@ -42,18 +42,21 @@ var Version = "MindSpore AI Infra Agent CLI. " + version.Version
 
 // Application is the top-level composition container.
 type Application struct {
-	Engine        *loop.Engine
-	EventCh       chan model.Event
-	llmReady      bool
-	WorkDir       string
-	RepoURL       string
-	Config        *configs.Config
-	provider      llm.Provider
-	toolRegistry  *tools.Registry
-	ctxManager    *agentctx.Manager
-	permService   permission.PermissionService
-	session       *session.Session
-	replayBacklog []model.Event
+	Engine               *loop.Engine
+	EventCh              chan model.Event
+	llmReady             bool
+	WorkDir              string
+	RepoURL              string
+	Config               *configs.Config
+	baseModelConfig      configs.ModelConfig
+	baseContextConfig    configs.ContextConfig
+	activeModelSelection modelSelectionState
+	provider             llm.Provider
+	toolRegistry         *tools.Registry
+	ctxManager           *agentctx.Manager
+	permService          permission.PermissionService
+	session              *session.Session
+	replayBacklog        []model.Event
 
 	// Skills
 	skillLoader *skills.Loader
@@ -232,19 +235,22 @@ func Wire(cfg BootstrapConfig) (*Application, error) {
 	engine.SetPermissionService(permService)
 
 	app := &Application{
-		Engine:        engine,
-		EventCh:       make(chan model.Event, 64),
-		WorkDir:       workDir,
-		RepoURL:       "github.com/vigo999/ms-cli",
-		Config:        config,
-		provider:      provider,
-		toolRegistry:  toolRegistry,
-		ctxManager:    ctxManager,
-		permService:   permService,
-		session:       runtimeSession,
-		replayBacklog: replayBacklog,
-		llmReady:      llmReady,
-		skillLoader:   skillLoader,
+		Engine:               engine,
+		EventCh:              make(chan model.Event, 64),
+		WorkDir:              workDir,
+		RepoURL:              "github.com/vigo999/ms-cli",
+		Config:               config,
+		baseModelConfig:      copyModelConfig(config.Model),
+		baseContextConfig:    config.Context,
+		activeModelSelection: modelSelectionState{Source: modelSelectionSourceDefault},
+		provider:             provider,
+		toolRegistry:         toolRegistry,
+		ctxManager:           ctxManager,
+		permService:          permService,
+		session:              runtimeSession,
+		replayBacklog:        replayBacklog,
+		llmReady:             llmReady,
+		skillLoader:          skillLoader,
 	}
 
 	// Auto-login from saved credentials.
@@ -266,55 +272,22 @@ func (a *Application) SetProvider(providerName, modelName, apiKey string) error 
 		return fmt.Errorf("unsupported provider: %s", providerName)
 	}
 
-	previousModel := a.Config.Model.Model
-
+	next := copyModelConfig(a.Config.Model)
 	if normalizedProvider != "" {
-		a.Config.Model.Provider = normalizedProvider
+		next.Provider = normalizedProvider
 	}
-
 	if modelName != "" {
-		a.Config.Model.Model = modelName
+		next.Model = modelName
 	}
 	if apiKey != "" {
-		a.Config.Model.Key = apiKey
+		next.Key = apiKey
 	}
-	configs.RefreshModelTokenDefaults(a.Config, previousModel)
 
-	resolveOpts := llm.ResolveOptions{
+	return a.applyModelConfig(next, modelSelectionState{
+		Source: modelSelectionSourceManual,
+	}, llm.ResolveOptions{
 		PreferConfigAPIKey: strings.TrimSpace(apiKey) != "",
-	}
-	provider, err := initProvider(a.Config.Model, resolveOpts)
-	if err != nil {
-		if err == errAPIKeyNotFound {
-			a.llmReady = false
-			provider = nil
-		} else {
-			return fmt.Errorf("init provider: %w", err)
-		}
-	} else {
-		a.llmReady = true
-	}
-
-	engineCfg := loop.EngineConfig{
-		MaxIterations:  10,
-		MaxTokens:      a.Config.Budget.MaxTokens,
-		Temperature:    float32(a.Config.Model.Temperature),
-		TimeoutPerTurn: time.Duration(a.Config.Model.TimeoutSec) * time.Second,
-	}
-	newEngine := loop.NewEngine(engineCfg, provider, a.toolRegistry)
-	if a.ctxManager != nil {
-		if err := a.ctxManager.SetTokenLimits(a.Config.Context.Window, a.Config.Context.ReserveTokens); err != nil {
-			return fmt.Errorf("update context limits: %w", err)
-		}
-	}
-	newEngine.SetContextManager(a.ctxManager)
-	newEngine.SetPermissionService(a.permService)
-	newEngine.SetTrajectoryRecorder(newTrajectoryRecorder(a.session))
-
-	a.Engine = newEngine
-	a.provider = provider
-
-	return nil
+	})
 }
 
 func initProvider(cfg configs.ModelConfig, opts llm.ResolveOptions) (llm.Provider, error) {
