@@ -39,6 +39,10 @@ var (
 	collapsedNameStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("244"))
 
+	collapsedTitleStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("252")).
+				Bold(true)
+
 	collapsedSummaryStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("240")).
 				Italic(true)
@@ -127,12 +131,32 @@ func renderTool(m model.Message, width int) string {
 // "  ▸ Read model/layer3.go — 42 lines"
 // "  ▸ Grep "allocTensor" — 5 matches"
 func renderCollapsedTool(m model.Message, width int) string {
+	if isHighlightedSkillTool(m.ToolName) {
+		return renderHighlightedCollapsedTool(m, width)
+	}
+
 	summary := ""
 	if m.Summary != "" {
 		summary = " — " + collapsedSummaryStyle.Render(m.Summary)
 	}
 	body := collapsedNameStyle.Render(strings.TrimSpace(m.ToolName + " " + m.Content))
 	return renderPrefixedBlock(body+summary, width, "  "+collapsedIconStyle.Render("▸")+" ", "    ")
+}
+
+func renderHighlightedCollapsedTool(m model.Message, width int) string {
+	body := collapsedTitleStyle.Render(strings.TrimSpace(m.ToolName))
+	if content := strings.TrimSpace(m.Content); content != "" {
+		body += " " + collapsedNameStyle.Render(content)
+	}
+	if summary := strings.TrimSpace(m.Summary); summary != "" {
+		body += " — " + collapsedSummaryStyle.Render(summary)
+	}
+	return renderPrefixedBlock(body, width, "  "+collapsedIconStyle.Render("▸")+" ", "    ")
+}
+
+func isHighlightedSkillTool(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	return strings.HasPrefix(name, "skill sync") || strings.HasPrefix(name, "skill ready")
 }
 
 // --- Expanded: full output with header + body ---

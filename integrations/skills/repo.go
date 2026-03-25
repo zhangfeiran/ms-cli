@@ -37,7 +37,10 @@ type RepoSync interface {
 
 // RepoSyncConfig controls where the shared skills repo is synced locally.
 type RepoSyncConfig struct {
-	HomeDir string
+	HomeDir       string
+	PromptInput   io.Reader
+	LogWriter     io.Writer
+	ConfirmUpdate func(localCommit, remoteCommit string) (bool, error)
 }
 
 // DefaultRepoSync keeps the bundled skills repo fresh under ~/.ms-cli.
@@ -51,6 +54,7 @@ type DefaultRepoSync struct {
 	runCommand  func(name string, args ...string) (string, error)
 	promptInput io.Reader
 	logWriter   io.Writer
+	confirmFn   func(localCommit, remoteCommit string) (bool, error)
 }
 
 // NewDefaultRepoSync creates the default startup syncer for the shared skills repo.
@@ -60,6 +64,14 @@ func NewDefaultRepoSync(homeDir string) *DefaultRepoSync {
 
 // NewRepoSync creates a startup syncer using the provided repo settings.
 func NewRepoSync(cfg RepoSyncConfig) *DefaultRepoSync {
+	promptInput := cfg.PromptInput
+	if promptInput == nil {
+		promptInput = os.Stdin
+	}
+	logWriter := cfg.LogWriter
+	if logWriter == nil {
+		logWriter = os.Stderr
+	}
 	return &DefaultRepoSync{
 		homeDir:     strings.TrimSpace(cfg.HomeDir),
 		repoURL:     DefaultRepoURL,
@@ -70,8 +82,9 @@ func NewRepoSync(cfg RepoSyncConfig) *DefaultRepoSync {
 		},
 		lookPath:    exec.LookPath,
 		runCommand:  defaultRunCommand,
-		promptInput: os.Stdin,
-		logWriter:   os.Stderr,
+		promptInput: promptInput,
+		logWriter:   logWriter,
+		confirmFn:   cfg.ConfirmUpdate,
 	}
 }
 
@@ -449,6 +462,9 @@ func (s *DefaultRepoSync) ensureSkillsDir(skillsDir string) error {
 }
 
 func (s *DefaultRepoSync) canPrompt() bool {
+	if s.confirmFn != nil {
+		return true
+	}
 	if s.promptInput == nil || s.logWriter == nil {
 		return false
 	}
@@ -464,6 +480,9 @@ func (s *DefaultRepoSync) canPrompt() bool {
 }
 
 func (s *DefaultRepoSync) confirmUpdate(localCommit, remoteCommit string) (bool, error) {
+	if s.confirmFn != nil {
+		return s.confirmFn(localCommit, remoteCommit)
+	}
 	reader := bufio.NewReader(s.promptInput)
 	for {
 		fmt.Fprintf(

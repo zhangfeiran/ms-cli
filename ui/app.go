@@ -22,6 +22,7 @@ const (
 	verticalPad               = 2
 	bootDuration              = 2 * time.Second
 	bootTickRate              = 80 * time.Millisecond
+	bootReadyToken            = "__boot_ready__"
 	maxToolLines              = 120
 	maxToolRunes              = 12000
 	interruptQueuedTrainToken = "__interrupt_queued_train__"
@@ -208,6 +209,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case bootDoneMsg:
 		a.bootActive = false
+		if a.userCh != nil {
+			select {
+			case a.userCh <- bootReadyToken:
+			default:
+			}
+		}
 		a.updateViewport()
 		return a, nil
 
@@ -578,10 +585,18 @@ func (a App) handleEvent(ev model.Event) (tea.Model, tea.Cmd) {
 		})
 
 	case model.ToolSkill:
-		a.state = a.resolveToolEvent(ev, model.Message{
-			Kind: model.MsgTool, ToolName: "Skill",
-			Display: model.DisplayCollapsed, Content: ev.Message, Summary: ev.Summary,
-		})
+		msg := model.Message{
+			Kind:     model.MsgTool,
+			ToolName: displayToolName(ev.ToolName),
+			Display:  model.DisplayCollapsed,
+			Content:  ev.Message,
+			Summary:  ev.Summary,
+		}
+		if strings.TrimSpace(ev.ToolName) == "load_skill" {
+			a.state = a.resolveToolEvent(ev, msg)
+		} else {
+			a.state = a.state.WithMessage(msg)
+		}
 
 	case model.ToolError:
 		a.state = a.clearThinking()

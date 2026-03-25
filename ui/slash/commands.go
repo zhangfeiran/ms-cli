@@ -3,6 +3,7 @@ package slash
 
 import (
 	"strings"
+	"sync"
 )
 
 // Command represents a slash command.
@@ -16,6 +17,7 @@ type Command struct {
 // Registry holds all available slash commands.
 type Registry struct {
 	commands map[string]Command
+	mu       sync.RWMutex
 }
 
 // NewRegistry creates a new slash command registry.
@@ -29,17 +31,23 @@ func NewRegistry() *Registry {
 
 // Register adds a command to the registry.
 func (r *Registry) Register(cmd Command) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.commands[cmd.Name] = cmd
 }
 
 // Get retrieves a command by name.
 func (r *Registry) Get(name string) (Command, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	cmd, ok := r.commands[name]
 	return cmd, ok
 }
 
 // List returns all registered commands.
 func (r *Registry) List() []Command {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	cmds := make([]Command, 0, len(r.commands))
 	for _, cmd := range r.commands {
 		cmds = append(cmds, cmd)
@@ -49,8 +57,14 @@ func (r *Registry) List() []Command {
 
 // Match returns commands that match the given prefix.
 func (r *Registry) Match(prefix string) []Command {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	if prefix == "" {
-		return r.List()
+		cmds := make([]Command, 0, len(r.commands))
+		for _, cmd := range r.commands {
+			cmds = append(cmds, cmd)
+		}
+		return cmds
 	}
 
 	var matches []Command
@@ -64,6 +78,8 @@ func (r *Registry) Match(prefix string) []Command {
 
 // Suggestions returns command names that match the given input.
 func (r *Registry) Suggestions(input string) []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	// If input is just "/", return all commands
 	if input == "/" {
 		names := make([]string, 0, len(r.commands))

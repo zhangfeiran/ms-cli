@@ -39,9 +39,6 @@ func Run(args []string) error {
 // run starts the TUI.
 func (a *Application) run() error {
 	go cleanUpdateTmp()
-	if checkAndPromptUpdate() {
-		return nil // user updated, exit so they restart
-	}
 	if a.session != nil {
 		defer a.session.Close()
 	}
@@ -59,9 +56,6 @@ func (a *Application) runReal() error {
 	}
 
 	go a.replayHistory()
-	// Show release notes for current version.
-	go a.emitUpdateHint()
-
 	go a.inputLoop(userCh)
 
 	_, err := p.Run()
@@ -81,6 +75,11 @@ func (a *Application) processInput(input string) {
 		return
 	}
 
+	if trimmed == bootReadyToken {
+		a.startDeferredStartup()
+		return
+	}
+
 	if trimmed == interruptQueuedTrainToken {
 		a.interruptQueuedTrain()
 		return
@@ -88,6 +87,10 @@ func (a *Application) processInput(input string) {
 
 	if trimmed == interruptActiveTaskToken {
 		a.interruptActiveTasks()
+		return
+	}
+
+	if a.handleStartupControlInput(trimmed) {
 		return
 	}
 

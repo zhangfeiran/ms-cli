@@ -28,7 +28,6 @@ import (
 	"github.com/vigo999/ms-cli/tools/shell"
 	skillstool "github.com/vigo999/ms-cli/tools/skills"
 	"github.com/vigo999/ms-cli/ui/model"
-	"github.com/vigo999/ms-cli/ui/slash"
 	wtrain "github.com/vigo999/ms-cli/workflow/train"
 )
 
@@ -56,7 +55,11 @@ type Application struct {
 	replayBacklog []model.Event
 
 	// Skills
-	skillLoader *skills.Loader
+	skillLoader   *skills.Loader
+	skillsHomeDir string
+	startupOnce   sync.Once
+	startupMu     sync.Mutex
+	startupPrompt *pendingStartupPrompt
 
 	// Bug tracking
 	bugService   *bugs.Service
@@ -140,8 +143,8 @@ func Wire(cfg BootstrapConfig) (*Application, error) {
 
 	toolRegistry := initTools(config, workDir)
 
-	// Skills: refresh the shared repo under ~/.ms-cli, then discover from
-	// legacy local dirs plus the synced repo (highest priority).
+	// Skills: discover from legacy local dirs plus the synced repo path.
+	// Shared repo refresh is deferred until the UI is visible.
 	homeDir, _ := os.UserHomeDir()
 	execSkillsDir := ""
 	if ep, err := os.Executable(); err == nil {
@@ -149,11 +152,7 @@ func Wire(cfg BootstrapConfig) (*Application, error) {
 	}
 	syncedSkillsDir := ""
 	if strings.TrimSpace(homeDir) != "" {
-		repoSync := skills.NewDefaultRepoSync(homeDir)
-		syncedSkillsDir = repoSync.SkillsDir()
-		if err := repoSync.Sync(); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: sync shared skills repo: %v\n", err)
-		}
+		syncedSkillsDir = skills.SyncedSkillsDir(homeDir)
 	}
 	skillLoader := skills.NewLoader(
 		execSkillsDir,
@@ -163,16 +162,7 @@ func Wire(cfg BootstrapConfig) (*Application, error) {
 	)
 	toolRegistry.MustRegister(skillstool.NewLoadSkillTool(skillLoader))
 
-	// Register each skill as a slash command in the UI registry.
-	for _, s := range skillLoader.List() {
-		name := s.Name
-		desc := s.Description
-		slash.Register(slash.Command{
-			Name:        "/" + name,
-			Description: desc,
-			Usage:       "/" + name + " [request...]",
-		})
-	}
+	registerSkillCommands(skillLoader.List())
 
 	ctxManager := agentctx.NewManager(agentctx.ManagerConfig{
 		MaxTokens:           config.Context.Window,
@@ -182,12 +172,7 @@ func Wire(cfg BootstrapConfig) (*Application, error) {
 	})
 
 	// Build system prompt: base + skill summaries.
-	systemPrompt := loop.DefaultSystemPrompt()
-	if summaries := skillLoader.List(); len(summaries) > 0 {
-		systemPrompt += "\n\n## Available Skills\n\n" +
-			"Use the load_skill tool to load a skill when the user's task matches one:\n\n" +
-			skills.FormatSummaries(summaries)
-	}
+	systemPrompt := buildSystemPrompt(skillLoader.List())
 
 	var (
 		runtimeSession *session.Session
@@ -245,6 +230,7 @@ func Wire(cfg BootstrapConfig) (*Application, error) {
 		replayBacklog: replayBacklog,
 		llmReady:      llmReady,
 		skillLoader:   skillLoader,
+		skillsHomeDir: strings.TrimSpace(homeDir),
 	}
 
 	// Auto-login from saved credentials.
