@@ -113,6 +113,7 @@ func TestLoaderLoad(t *testing.T) {
 	_ = os.MkdirAll(skillDir, 0o755)
 	skillContent := "---\nname: pdf\ndescription: Process PDFs\n---\n\n# PDF instructions\nDo things."
 	_ = os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillContent), 0o644)
+	skillFile := filepath.Join(skillDir, "SKILL.md")
 
 	loader := NewLoader(dir)
 	content, err := loader.Load("pdf")
@@ -129,6 +130,15 @@ func TestLoaderLoad(t *testing.T) {
 	// Should not contain frontmatter
 	if contains(content, "description: Process PDFs") {
 		t.Error("expected frontmatter to be stripped")
+	}
+	if !contains(content, `location="`+skillDir+`"`) {
+		t.Errorf("expected absolute skill directory in content, got: %s", content)
+	}
+	if !contains(content, `source="`+skillFile+`"`) {
+		t.Errorf("expected absolute SKILL.md path in content, got: %s", content)
+	}
+	if !contains(content, "Resolve files mentioned next to SKILL.md from that directory.") {
+		t.Errorf("expected location guidance in content, got: %s", content)
 	}
 	// Should contain body
 	if !contains(content, "# PDF instructions") {

@@ -154,30 +154,34 @@ func (m *Manager) AddMessage(msg llm.Message) error {
 
 	// 估算新消息的 Token
 	msgTokens := m.tokenizer.EstimateMessage(msg)
-
-	// 检查是否需要压缩
-	if m.shouldCompactLocked(msgTokens) {
-		if err := m.compactLocked(); err != nil {
-			return fmt.Errorf("compact context: %w", err)
-		}
+	maxUsable := m.config.MaxTokens - m.config.ReserveTokens
+	if msgTokens > maxUsable {
+		return fmt.Errorf("single message too large for context budget: %d tokens > %d", msgTokens, maxUsable)
 	}
 
-	// 再次检查预算（压缩后）
-	if m.budget != nil {
-		currentHistory := m.tokenizer.EstimateMessages(m.messages)
-		if currentHistory+msgTokens > m.budget.GetHistoryBudget() {
-			// 仍然超预算，可能需要丢弃一些消息
-			if err := m.emergencyCompactLocked(); err != nil {
-				return fmt.Errorf("emergency compact: %w", err)
-			}
-		}
-	}
-
+	// 先追加，再按真实占用触发后置压缩
 	m.messages = append(m.messages, msg)
 
 	// 更新预算
 	if m.budget != nil {
 		m.budget.SetHistoryUsage(m.tokenizer.EstimateMessages(m.messages))
+	}
+
+	// 后置压缩：基于最新上下文做决策，避免仅靠预估触发
+	if m.shouldCompactLocked(0) {
+		if err := m.compactLocked(); err != nil {
+			return fmt.Errorf("compact context: %w", err)
+		}
+	}
+
+	// 紧急压缩：后置压缩后仍超预算时启用更激进策略
+	if m.budget != nil {
+		currentHistory := m.tokenizer.EstimateMessages(m.messages)
+		if currentHistory > m.budget.GetHistoryBudget() {
+			if err := m.emergencyCompactLocked(); err != nil {
+				return fmt.Errorf("emergency compact: %w", err)
+			}
+		}
 	}
 
 	m.recalculateUsage()
@@ -217,6 +221,29 @@ func (m *Manager) GetNonSystemMessages() []llm.Message {
 	return result
 }
 
+// SetNonSystemMessages replaces all non-system messages.
+func (m *Manager) SetNonSystemMessages(msgs []llm.Message) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.messages = make([]llm.Message, len(msgs))
+	copy(m.messages, msgs)
+
+	if m.budget != nil {
+		m.budget.SetHistoryUsage(m.tokenizer.EstimateMessages(m.messages))
+	}
+
+	m.stats.MessageCount = len(m.messages)
+	m.stats.ToolCallCount = 0
+	for _, msg := range m.messages {
+		if msg.Role == "tool" {
+			m.stats.ToolCallCount++
+		}
+	}
+
+	m.recalculateUsage()
+}
+
 // Clear clears all messages except system prompt.
 func (m *Manager) Clear() {
 	m.mu.Lock()
@@ -243,6 +270,39 @@ func (m *Manager) TokenUsage() TokenUsage {
 	defer m.mu.RUnlock()
 
 	return m.usage
+}
+
+// SetTokenLimits updates the runtime context budget limits.
+func (m *Manager) SetTokenLimits(maxTokens, reserveTokens int) error {
+	if maxTokens <= 0 {
+		return fmt.Errorf("max tokens must be positive")
+	}
+	if reserveTokens < 0 {
+		return fmt.Errorf("reserve tokens must be non-negative")
+	}
+	if reserveTokens >= maxTokens {
+		return fmt.Errorf("reserve tokens must be less than max tokens")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	budget, err := NewBudget(maxTokens, m.config.Allocation)
+	if err != nil {
+		return fmt.Errorf("new budget: %w", err)
+	}
+
+	m.config.MaxTokens = maxTokens
+	m.config.ReserveTokens = reserveTokens
+	m.budget = budget
+
+	if m.system != nil {
+		m.budget.SetSystemUsage(m.tokenizer.EstimateMessage(*m.system))
+	}
+	m.budget.SetHistoryUsage(m.tokenizer.EstimateMessages(m.messages))
+	m.recalculateUsage()
+
+	return nil
 }
 
 // EstimateTokens estimates token count for messages.
@@ -325,14 +385,20 @@ func (m *Manager) GetDetailedStats() map[string]any {
 
 // shouldCompactLocked checks if compaction is needed (must hold lock).
 func (m *Manager) shouldCompactLocked(additionalTokens int) bool {
+	threshold := m.compactionThresholdPercentLocked()
 	if m.budget != nil {
 		current := m.tokenizer.EstimateMessages(m.messages) + additionalTokens
-		return m.budget.ShouldCompact(float64(current) / float64(m.config.MaxTokens) * 100)
+		systemTokens := 0
+		if m.system != nil {
+			systemTokens = m.tokenizer.EstimateMessage(*m.system)
+		}
+		usagePercent := float64(current+systemTokens) / float64(m.config.MaxTokens) * 100
+		return usagePercent >= threshold
 	}
 
 	// 回退到简单估算
 	estimatedTokens := m.tokenizer.EstimateMessages(m.messages) + additionalTokens
-	return float64(estimatedTokens) > float64(m.config.MaxTokens)*m.config.CompactionThreshold
+	return float64(estimatedTokens) >= float64(m.config.MaxTokens)*(threshold/100.0)
 }
 
 // compactLocked compacts the context (must hold lock).
@@ -353,10 +419,11 @@ func (m *Manager) compactLocked() error {
 		// 简单压缩
 		keepCount := m.config.MaxHistoryRounds * 2
 		if keepCount < len(m.messages) {
-			removed := len(m.messages) - keepCount
+			kept := keepRecentMessages(m.messages, keepCount)
+			removed := len(m.messages) - len(kept)
 			summary := fmt.Sprintf("[Earlier conversation: %d messages summarized]", removed)
 			summaryMsg := llm.NewSystemMessage(summary)
-			m.messages = append([]llm.Message{summaryMsg}, m.messages[removed:]...)
+			m.messages = append([]llm.Message{summaryMsg}, kept...)
 			m.stats.CompactCount++
 			now := time.Now()
 			m.stats.LastCompactAt = &now
@@ -381,8 +448,16 @@ func (m *Manager) emergencyCompactLocked() error {
 	}
 
 	if len(m.messages) > keepCount {
-		removed := len(m.messages) - keepCount
-		m.messages = m.messages[removed:]
+		if m.config.EnableSmartCompact {
+			priorityCompactor := NewCompactor(CompactorConfig{
+				Strategy:        CompactStrategyPriority,
+				MaxKeepMessages: keepCount,
+			})
+			compacted, _ := priorityCompactor.Compact(m.messages, m.system)
+			m.messages = compacted
+		} else {
+			m.messages = keepRecentMessages(m.messages, keepCount)
+		}
 		m.stats.CompactCount++
 		now := time.Now()
 		m.stats.LastCompactAt = &now
@@ -394,6 +469,22 @@ func (m *Manager) emergencyCompactLocked() error {
 	}
 
 	return nil
+}
+
+func (m *Manager) compactionThresholdPercentLocked() float64 {
+	threshold := m.config.CompactionThreshold
+	switch {
+	case threshold <= 0:
+		return 85.0
+	case threshold <= 1:
+		return threshold * 100
+	default:
+		// 兼容旧配置：允许直接填写百分比（0-100）
+		if threshold > 100 {
+			return 100
+		}
+		return threshold
+	}
 }
 
 // recalculateUsage recalculates token usage (must hold lock).
@@ -459,6 +550,6 @@ func (m *Manager) TruncateTo(count int) {
 		return
 	}
 
-	m.messages = m.messages[len(m.messages)-count:]
+	m.messages = keepRecentMessages(m.messages, count)
 	m.recalculateUsage()
 }

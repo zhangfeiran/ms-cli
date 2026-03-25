@@ -88,8 +88,8 @@ See `configs/server.yaml` for server configuration (auth tokens, database, liste
 
 `ms-cli` supports three provider modes:
 
-- `openai`: native OpenAI API protocol
-- `openai-compatible`: OpenAI-compatible protocol (default)
+- `openai-completion`: OpenAI Chat Completions API and compatible gateways (default)
+- `openai-responses`: OpenAI Responses API
 - `anthropic`: Anthropic Messages API protocol
 
 Provider routing is fully configuration-driven (no runtime protocol probing).
@@ -108,10 +108,12 @@ Each higher layer overrides only the fields it sets.
 
 ```yaml
 model:
-  provider: openai-compatible
+  provider: openai-completion
   url: https://api.openai.com/v1
   model: gpt-4o-mini
   key: ""
+context:
+  window: 200000
 ```
 
 ### Environment variables
@@ -125,17 +127,45 @@ Use unified `MSCLI_*` names:
 - `MSCLI_TEMPERATURE`
 - `MSCLI_MAX_TOKENS`
 - `MSCLI_TIMEOUT`
+- `MSCLI_CONTEXT_WINDOW`
 
 CLI flags `--api-key`, `--url`, `--model` are startup overrides for the current run.
+
+
+
+### Model token defaults (auto + override)
+
+When `model.model` matches known families (`gpt-5` ~ `gpt-5.4`, `claude-4.5` ~ `claude-4.6`, `glm-4.7*`, `glm-5*`, `kimi-k2*`, `kimi-k2.5*`, `minimax-m2.5*`, `minimax-m2.7*`, `deepseek*`, `qwen3*`, `qwen3.5*`), ms-cli auto-fills:
+
+- `model.max_tokens`
+- `context.window`
+
+Precedence is:
+
+1. `MSCLI_MAX_TOKENS` / `MSCLI_CONTEXT_WINDOW`
+2. explicit values in config
+3. auto defaults from model name
+4. built-in defaults
+
+You can define custom model-family defaults:
+
+```yaml
+model_profiles:
+  my-model-prefix:
+    model_max_tokens: 8192
+    context_window: 65536
+```
 
 ### Use OpenAI API
 
 ```bash
-export MSCLI_PROVIDER=openai
+export MSCLI_PROVIDER=openai-completion
 export MSCLI_API_KEY=sk-...
 export MSCLI_MODEL=gpt-4o-mini
 ./ms-cli
 ```
+
+If you specifically want the Responses API path, use `openai-responses`.
 
 ### Use Anthropic API
 
@@ -148,10 +178,10 @@ export MSCLI_MODEL=claude-3-5-sonnet
 
 ### Use OpenRouter (OpenAI-compatible third-party routing)
 
-OpenRouter uses an OpenAI-compatible interface, so set provider to `openai-compatible`:
+OpenRouter uses an OpenAI-compatible interface, so set provider to `openai-completion`:
 
 ```bash
-export MSCLI_PROVIDER=openai-compatible
+export MSCLI_PROVIDER=openai-completion
 export MSCLI_API_KEY=sk-or-...
 export MSCLI_BASE_URL=https://openrouter.ai/api/v1
 export MSCLI_MODEL=anthropic/claude-3.5-sonnet
@@ -165,8 +195,8 @@ You can also set custom headers in `model.headers` in config when required by a 
 Inside CLI:
 
 - `/model gpt-4o-mini` (switch model, keep current provider)
-- `/model openai:gpt-4o`
-- `/model openai-compatible:gpt-4o-mini`
+- `/model openai-completion:gpt-4o-mini`
+- `/model openai-responses:gpt-4o`
 - `/model anthropic:claude-3-5-sonnet`
 
 ## Known Limitations

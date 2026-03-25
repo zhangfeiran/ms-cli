@@ -2,9 +2,7 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,38 +11,28 @@ import (
 	"github.com/vigo999/ms-cli/integrations/llm"
 )
 
-func TestWire_OpenAICompatibleDefaultRouting(t *testing.T) {
+func TestWire_OpenAICompletionDefaultRouting(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
 	t.Setenv("MSCLI_PROVIDER", "")
 	t.Setenv("MSCLI_API_KEY", "mscli-token")
+	t.Setenv("MSCLI_BASE_URL", "https://example.test/v1")
 
 	var gotPath string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"id": "cmpl-test",
-			"choices": []map[string]any{
-				{
-					"message": map[string]any{
-						"role":    "assistant",
-						"content": "ok",
-					},
-					"finish_reason": "stop",
-				},
-			},
-		})
-	}))
-	defer server.Close()
-	t.Setenv("MSCLI_BASE_URL", server.URL+"/v1")
+	origBuildProvider := buildProvider
+	buildProvider = func(resolved llm.ResolvedConfig) (llm.Provider, error) {
+		return newOpenAICompletionTestProvider(t, resolved, func(req *http.Request) {
+			gotPath = req.URL.Path
+		}), nil
+	}
+	defer func() { buildProvider = origBuildProvider }()
 
 	tempDir := t.TempDir()
 	t.Chdir(tempDir)
 
 	defaultCfg := configs.DefaultConfig()
-	defaultCfg.Model.Provider = "openai-compatible"
+	defaultCfg.Model.Provider = "openai-completion"
 	defaultCfg.Model.Model = "gpt-4o-mini"
 	defaultCfg.Model.Key = ""
 	configPath := filepath.Join(tempDir, ".ms-cli", "config.yaml")
@@ -60,8 +48,11 @@ func TestWire_OpenAICompatibleDefaultRouting(t *testing.T) {
 		t.Fatalf("Wire() error = %v", err)
 	}
 
-	if got, want := app.provider.Name(), "openai-compatible"; got != want {
+	if got, want := app.provider.Name(), "openai-completion"; got != want {
 		t.Fatalf("provider.Name() = %q, want %q", got, want)
+	}
+	if got, want := app.Config.Model.URL, "https://example.test/v1"; got != want {
+		t.Fatalf("config.Model.URL = %q, want %q", got, want)
 	}
 
 	_, err = app.provider.Complete(context.Background(), &llm.CompletionRequest{

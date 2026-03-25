@@ -1,6 +1,7 @@
 package app
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -175,6 +176,7 @@ func TestCmdProjectFallbackWhenNotLoggedIn(t *testing.T) {
 	defer func() { runProjectGit = orig }()
 
 	root := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
 
 	runProjectGit = func(workDir string, args ...string) (string, error) {
 		switch strings.Join(args, " ") {
@@ -200,8 +202,14 @@ func TestCmdProjectFallbackWhenNotLoggedIn(t *testing.T) {
 	app.cmdProject(nil)
 
 	ev := drainUntilEventType(t, app, model.AgentReply)
-	if !strings.Contains(ev.Message, "working tree is clean") {
-		t.Fatalf("expected fallback git status, got:\n%s", ev.Message)
+	for _, want := range []string{
+		"[ OVERVIEW ]",
+		"repo: " + filepath.Base(root),
+		"root: " + root,
+	} {
+		if !strings.Contains(ev.Message, want) {
+			t.Fatalf("expected fallback overview to contain %q, got:\n%s", want, ev.Message)
+		}
 	}
 }
 

@@ -25,6 +25,7 @@ const (
 	maxToolLines              = 120
 	maxToolRunes              = 12000
 	interruptQueuedTrainToken = "__interrupt_queued_train__"
+	interruptActiveTaskToken  = "__interrupt_active_task__"
 )
 
 var (
@@ -260,11 +261,18 @@ func (a App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return a, tea.Quit
 		}
 		a.lastInterrupt = now
+		if a.userCh != nil {
+			select {
+			case a.userCh <- interruptActiveTaskToken:
+			default:
+			}
+		}
+		a.state = a.clearThinking()
 		a.input = a.input.Reset()
 		a.resizeActiveLayout()
 		a.state = a.state.WithMessage(model.Message{
 			Kind:    model.MsgAgent,
-			Content: "Interrupted. Press Ctrl+C again within 1 second to exit.",
+			Content: "Interrupt requested. Press Ctrl+C again within 1 second to exit.",
 		})
 		a.updateViewport()
 		return a, nil
@@ -465,9 +473,13 @@ func (a App) maybeDispatchQueuedInput() App {
 }
 
 func (a App) handleEvent(ev model.Event) (tea.Model, tea.Cmd) {
+	a = a.applyUsageSnapshot(ev)
+
 	var eventCmd tea.Cmd
 
 	switch ev.Type {
+	case model.UserInput:
+		a.state = a.state.WithMessage(model.Message{Kind: model.MsgUser, Content: ev.Message})
 	case model.IssueIndexOpen:
 		a.openIssueIndex(ev.IssueView)
 
@@ -482,9 +494,6 @@ func (a App) handleEvent(ev model.Event) (tea.Model, tea.Cmd) {
 
 	case model.AgentThinking:
 		a.state = a.state.WithThinking(true)
-		if !a.hasThinkingMessage() {
-			a.state = a.state.WithMessage(model.Message{Kind: model.MsgThinking})
-		}
 
 	case model.AgentReply:
 		a.state = a.state.WithThinking(false)
@@ -495,11 +504,16 @@ func (a App) handleEvent(ev model.Event) (tea.Model, tea.Cmd) {
 		} else if ev.Train != nil && ev.Train.ActionSource != "" {
 			content = agentMsg(evSource(ev.Train, ""), ev.Message, false)
 		}
-		a.state = a.replaceThinking(model.Message{Kind: model.MsgAgent, Content: content})
+		a.state = a.finalizeAgentMessage(content)
+
+	case model.AgentReplyDelta:
+		a.state = a.state.WithThinking(false)
+		a.state = a.appendToStreamingAgent(ev.Message)
 
 	case model.ToolCallStart:
 		a.state = a.state.WithThinking(false)
-		a.state = a.replaceThinking(a.pendingToolMessage(ev))
+		a.state = a.commitStreamingAgent()
+		a.state = a.state.WithMessage(a.pendingToolMessage(ev))
 
 	case model.CmdStarted:
 		stats := a.state.Stats
@@ -570,6 +584,7 @@ func (a App) handleEvent(ev model.Event) (tea.Model, tea.Cmd) {
 		})
 
 	case model.ToolError:
+		a.state = a.clearThinking()
 		stats := a.state.Stats
 		stats.Errors++
 		a.state = a.state.WithStats(stats)
@@ -578,15 +593,14 @@ func (a App) handleEvent(ev model.Event) (tea.Model, tea.Cmd) {
 			Display: model.DisplayError, Content: truncateToolContent(ev.Message),
 		})
 
+	case model.ToolReplay:
+		a.state = a.state.WithMessage(replayToolMessage(ev))
+
 	case model.AnalysisReady:
 		a.state = a.state.WithMessage(model.Message{Kind: model.MsgAgent, Content: ev.Message})
 
 	case model.TokenUpdate:
-		mi := a.state.Model
-		mi.CtxUsed = ev.CtxUsed
-		mi.CtxMax = ev.CtxMax
-		mi.TokensUsed = ev.TokensUsed
-		a.state = a.state.WithModel(mi)
+		// usage snapshot is applied before the event switch
 
 	case model.TaskUpdated:
 		// no-op for now
@@ -599,6 +613,9 @@ func (a App) handleEvent(ev model.Event) (tea.Model, tea.Cmd) {
 	case model.ModelUpdate:
 		mi := a.state.Model
 		mi.Name = ev.Message
+		if ev.CtxMax > 0 {
+			mi.CtxMax = ev.CtxMax
+		}
 		a.state = a.state.WithModel(mi)
 
 	case model.IssueUserUpdate:
@@ -942,6 +959,19 @@ func (a App) handleEvent(ev model.Event) (tea.Model, tea.Cmd) {
 		return a, tea.Batch(eventCmd, a.waitForEvent)
 	}
 	return a, a.waitForEvent
+}
+
+func (a App) applyUsageSnapshot(ev model.Event) App {
+	if ev.CtxMax <= 0 {
+		return a
+	}
+
+	mi := a.state.Model
+	mi.CtxUsed = ev.CtxUsed
+	mi.CtxMax = ev.CtxMax
+	mi.TokensUsed = ev.TokensUsed
+	a.state = a.state.WithModel(mi)
+	return a
 }
 
 // handleTrainAction executes the currently focused action button.
@@ -1472,26 +1502,69 @@ func compareRuns(tv model.TrainWorkspaceState) []model.TrainRunState {
 
 // ── Rendering ────────────────────────────────────────────────
 
-func (a App) replaceThinking(m model.Message) model.State {
-	msgs := make([]model.Message, 0, len(a.state.Messages))
-	for _, msg := range a.state.Messages {
-		if msg.Kind != model.MsgThinking {
-			msgs = append(msgs, msg)
+func (a App) appendToStreamingAgent(delta string) model.State {
+	if delta == "" {
+		return a.state
+	}
+
+	msgs := make([]model.Message, len(a.state.Messages))
+	copy(msgs, a.state.Messages)
+
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Kind == model.MsgAgent && msgs[i].Streaming {
+			msgs[i].Content += delta
+			next := a.state
+			next.Messages = msgs
+			return next
 		}
 	}
-	msgs = append(msgs, m)
+
+	msgs = append(msgs, model.Message{
+		Kind:      model.MsgAgent,
+		Content:   delta,
+		Streaming: true,
+	})
 	next := a.state
 	next.Messages = msgs
 	return next
 }
 
-func (a App) hasThinkingMessage() bool {
-	for i := len(a.state.Messages) - 1; i >= 0; i-- {
-		if a.state.Messages[i].Kind == model.MsgThinking {
-			return true
+func (a App) finalizeAgentMessage(content string) model.State {
+	msgs := make([]model.Message, len(a.state.Messages))
+	copy(msgs, a.state.Messages)
+
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Kind == model.MsgAgent && msgs[i].Streaming {
+			msgs[i].Content = content
+			msgs[i].Streaming = false
+			next := a.state
+			next.Messages = msgs
+			return next
 		}
 	}
-	return false
+
+	next := a.state
+	next.Messages = append(msgs, model.Message{Kind: model.MsgAgent, Content: content})
+	return next
+}
+
+func (a App) commitStreamingAgent() model.State {
+	msgs := make([]model.Message, len(a.state.Messages))
+	copy(msgs, a.state.Messages)
+
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Kind == model.MsgAgent && msgs[i].Streaming {
+			msgs[i].Streaming = false
+			next := a.state
+			next.Messages = msgs
+			return next
+		}
+	}
+	return a.state
+}
+
+func (a App) clearThinking() model.State {
+	return a.state.WithThinking(false)
 }
 
 func (a App) appendToLastTool(line string) model.State {
@@ -1639,6 +1712,24 @@ func displayToolName(name string) string {
 			return "Tool"
 		}
 		return name
+	}
+}
+
+func replayToolMessage(ev model.Event) model.Message {
+	display := model.DisplayCollapsed
+	content := ev.Message
+
+	switch strings.TrimSpace(ev.ToolName) {
+	case "shell", "edit", "write":
+		display = model.DisplayExpanded
+		content = truncateToolContent(ev.Message)
+	}
+
+	return model.Message{
+		Kind:     model.MsgTool,
+		ToolName: displayToolName(ev.ToolName),
+		Display:  display,
+		Content:  content,
 	}
 }
 

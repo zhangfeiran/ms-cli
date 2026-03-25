@@ -1,6 +1,7 @@
 package context
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/vigo999/ms-cli/integrations/llm"
@@ -159,6 +160,32 @@ func TestTokenUsage(t *testing.T) {
 	}
 }
 
+func TestSetTokenLimits(t *testing.T) {
+	mgr := NewManager(DefaultManagerConfig())
+	mgr.SetSystemPrompt("system prompt")
+	if err := mgr.AddMessage(llm.NewUserMessage("hello world")); err != nil {
+		t.Fatalf("AddMessage failed: %v", err)
+	}
+
+	if err := mgr.SetTokenLimits(200000, 4000); err != nil {
+		t.Fatalf("SetTokenLimits failed: %v", err)
+	}
+
+	usage := mgr.TokenUsage()
+	if got, want := usage.Max, 200000; got != want {
+		t.Fatalf("usage.Max = %d, want %d", got, want)
+	}
+	if got, want := usage.Reserved, 4000; got != want {
+		t.Fatalf("usage.Reserved = %d, want %d", got, want)
+	}
+	if mgr.budget == nil {
+		t.Fatal("budget should be reinitialized")
+	}
+	if got, want := mgr.budget.GetStats().MaxTokens, 200000; got != want {
+		t.Fatalf("budget max tokens = %d, want %d", got, want)
+	}
+}
+
 func TestIsWithinBudget(t *testing.T) {
 	cfg := DefaultManagerConfig()
 	cfg.MaxTokens = 100
@@ -170,6 +197,40 @@ func TestIsWithinBudget(t *testing.T) {
 	smallMsg := llm.NewUserMessage("Hi")
 	if !mgr.IsWithinBudget(smallMsg) {
 		t.Error("Small message should be within budget")
+	}
+}
+
+func TestCompactionThresholdSupportsRatioAndPercent(t *testing.T) {
+	cfgRatio := DefaultManagerConfig()
+	cfgRatio.CompactionThreshold = 0.85
+	mgrRatio := NewManager(cfgRatio)
+	mgrRatio.mu.Lock()
+	if got := mgrRatio.compactionThresholdPercentLocked(); got != 85 {
+		mgrRatio.mu.Unlock()
+		t.Fatalf("expected 85%% threshold for ratio config, got %.2f", got)
+	}
+	mgrRatio.mu.Unlock()
+
+	cfgPercent := DefaultManagerConfig()
+	cfgPercent.CompactionThreshold = 85
+	mgrPercent := NewManager(cfgPercent)
+	mgrPercent.mu.Lock()
+	if got := mgrPercent.compactionThresholdPercentLocked(); got != 85 {
+		mgrPercent.mu.Unlock()
+		t.Fatalf("expected 85%% threshold for percent config, got %.2f", got)
+	}
+	mgrPercent.mu.Unlock()
+}
+
+func TestAddMessageRejectsSingleOversizedMessage(t *testing.T) {
+	cfg := DefaultManagerConfig()
+	cfg.MaxTokens = 100
+	cfg.ReserveTokens = 20
+	mgr := NewManager(cfg)
+
+	oversized := llm.NewToolMessage("call_1", strings.Repeat("x", 1000)) // ~250 tokens
+	if err := mgr.AddMessage(oversized); err == nil {
+		t.Fatal("expected oversized message to be rejected")
 	}
 }
 

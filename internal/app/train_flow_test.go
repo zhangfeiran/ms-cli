@@ -15,7 +15,7 @@ import (
 //  2. start → running → logs + metrics → completed
 //  3. Phase gates block invalid commands
 func TestTrainPhase1Flow(t *testing.T) {
-	app := newTestApp()
+	app := newTestApp(t)
 
 	// ── Step 1: /train qwen3 lora → setup → ready ──
 	app.cmdTrain([]string{"qwen3", "lora"})
@@ -53,7 +53,7 @@ func TestTrainPhase1Flow(t *testing.T) {
 }
 
 func TestCmdTrainDuplicateStartQueuesUntilCurrentStepFinishes(t *testing.T) {
-	app := newTestApp()
+	app := newTestApp(t)
 
 	app.cmdTrain([]string{"qwen3", "lora", "dataset1"})
 	app.cmdTrain([]string{"qwen3", "lora", "dataset2"})
@@ -101,7 +101,7 @@ func TestCmdTrainDuplicateStartQueuesUntilCurrentStepFinishes(t *testing.T) {
 }
 
 func TestTrainBootstrapFlowReady(t *testing.T) {
-	app := newTestApp()
+	app := newTestApp(t)
 
 	app.cmdTrain([]string{})
 
@@ -130,7 +130,7 @@ func TestTrainBootstrapFlowReady(t *testing.T) {
 }
 
 func TestProcessInputKeepsPlainChatGlobalDuringTrainMode(t *testing.T) {
-	app := newTestApp()
+	app := newTestApp(t)
 	app.trainMode = true
 	app.trainPhase = "ready"
 
@@ -146,7 +146,7 @@ func TestProcessInputKeepsPlainChatGlobalDuringTrainMode(t *testing.T) {
 }
 
 func TestProcessInputUsesSlashTrainControlsForActiveWorkspace(t *testing.T) {
-	app := newTestApp()
+	app := newTestApp(t)
 	app.trainMode = true
 	app.trainPhase = "ready"
 
@@ -174,7 +174,7 @@ func TestProcessInputUsesSlashTrainControlsForActiveWorkspace(t *testing.T) {
 //  9. Phase gates block invalid commands at each step
 //  10. View Diff is available in completed state
 func TestTrainFullFlow(t *testing.T) {
-	app := newTestApp()
+	app := newTestApp(t)
 
 	// Set up train mode manually for Phase 2 legacy flow (no controller).
 	req := itrain.Request{Model: "qwen3", Method: "lora"}
@@ -261,9 +261,9 @@ func TestTrainFullFlow(t *testing.T) {
 	app.handleTrainInput("apply fix")
 	assertPhase(t, app, "fixing")
 
-	// Should see running phase (rerun)
+	// Rerun is asynchronous and can advance to evaluation immediately when
+	// demo playback is accelerated for tests.
 	drainUntil(t, app, model.TrainRerunStarted, 15*time.Second)
-	assertPhase(t, app, "running")
 
 	// ── Step 8: rerun completes, verification passes → completed ──
 	drainUntil(t, app, model.TrainVerified, 60*time.Second)
@@ -332,7 +332,7 @@ func TestTrainPhaseGatesComprehensive(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.phase+"/"+tt.command, func(t *testing.T) {
-			app := newTestApp()
+			app := newTestApp(t)
 			app.trainMu.Lock()
 			app.trainMode = true
 			app.trainPhase = tt.phase
@@ -357,7 +357,10 @@ func TestTrainPhaseGatesComprehensive(t *testing.T) {
 
 var trainReqFixture = itrain.Request{Model: "qwen3", Method: "lora"}
 
-func newTestApp() *Application {
+func newTestApp(t *testing.T) *Application {
+	t.Helper()
+	t.Setenv("MS_DEMO_SPEED", "1000")
+
 	return &Application{
 		EventCh: make(chan model.Event, 256),
 		Config:  &configs.Config{},
