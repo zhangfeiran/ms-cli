@@ -7,14 +7,32 @@ import (
 	"strings"
 )
 
+var allowedAbsoluteHomePaths = []string{
+	"~/.ms-cli/skills",
+	"~/.ms-cli/mindspore-skills",
+}
+
 func resolveSafePath(workDir, input string) (string, error) {
 	if strings.TrimSpace(input) == "" {
 		return "", fmt.Errorf("path is required")
 	}
 
 	cleaned := filepath.Clean(input)
+	normalized, err := normalizeAllowedAbsolutePath(cleaned)
+	if err != nil {
+		return "", err
+	}
+	cleaned = normalized
+
 	if filepath.IsAbs(cleaned) {
-		return "", fmt.Errorf("absolute paths are not allowed: %s", input)
+		allowed, err := isAllowedAbsolutePath(cleaned)
+		if err != nil {
+			return "", err
+		}
+		if !allowed {
+			return "", fmt.Errorf("absolute paths are not allowed: %s", input)
+		}
+		return cleaned, nil
 	}
 
 	baseAbs, err := filepath.Abs(workDir)
@@ -36,4 +54,56 @@ func resolveSafePath(workDir, input string) (string, error) {
 	}
 
 	return fullAbs, nil
+}
+
+func normalizeAllowedAbsolutePath(input string) (string, error) {
+	cleanedSlash := filepath.ToSlash(filepath.Clean(input))
+	if !matchesAllowedHomePath(cleanedSlash) {
+		return input, nil
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
+	}
+
+	trimmed := strings.TrimPrefix(cleanedSlash, "~/")
+	return filepath.Join(homeDir, filepath.FromSlash(trimmed)), nil
+}
+
+func isAllowedAbsolutePath(input string) (bool, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return false, fmt.Errorf("resolve home directory: %w", err)
+	}
+
+	for _, allowedRoot := range allowedAbsoluteHomePaths {
+		trimmed := strings.TrimPrefix(allowedRoot, "~/")
+		base := filepath.Join(homeDir, filepath.FromSlash(trimmed))
+		if pathWithinBase(base, input) {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+func matchesAllowedHomePath(input string) bool {
+	for _, allowedRoot := range allowedAbsoluteHomePaths {
+		if input == allowedRoot || strings.HasPrefix(input, allowedRoot+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func pathWithinBase(base, target string) bool {
+	rel, err := filepath.Rel(base, target)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
 }
