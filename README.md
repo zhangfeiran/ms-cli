@@ -33,6 +33,12 @@ export MSCLI_API_KEY=sk-...
 mscli
 ```
 
+Built-in defaults:
+
+- provider: `anthropic`
+- model: `kimi-k2.5`
+- base URL: `https://api.kimi.com/coding/`
+
 ### Slash Commands
 
 | Command | Description |
@@ -66,6 +72,9 @@ cd /opt/mscli && ./ms-cli-server -config ./server.yaml
 ```
 
 See `configs/server.yaml` for server configuration (auth tokens, database, listen address).
+If the server process exports `MSCLI_API_KEY`, logged-in clients without a local key
+will fetch that key from `/me` at startup or after `/login`. The fetched key stays
+in memory only and is not written to `~/.ms-cli/credentials.json`.
 
 ## Documentation
 
@@ -78,7 +87,7 @@ See `configs/server.yaml` for server configuration (auth tokens, database, liste
 
 ```bash
 # Select URL and model
-./ms-cli --url https://api.openai.com/v1 --model gpt-4o
+./ms-cli --url https://api.kimi.com/coding/ --model kimi-k2.5
 
 # Set API key directly
 ./ms-cli --api-key sk-xxx
@@ -88,9 +97,9 @@ See `configs/server.yaml` for server configuration (auth tokens, database, liste
 
 `ms-cli` supports three provider modes:
 
-- `openai-completion`: OpenAI Chat Completions API and compatible gateways (default)
+- `openai-completion`: OpenAI Chat Completions API and compatible gateways
 - `openai-responses`: OpenAI Responses API
-- `anthropic`: Anthropic Messages API protocol
+- `anthropic`: Anthropic Messages API protocol (default, built-in base URL `https://api.kimi.com/coding/`)
 
 Provider routing is fully configuration-driven (no runtime protocol probing).
 
@@ -150,6 +159,7 @@ If you specifically want the Responses API path, use `openai-responses`.
 
 ```bash
 export MSCLI_PROVIDER=anthropic
+export MSCLI_BASE_URL=https://api.anthropic.com
 export MSCLI_API_KEY=sk-ant-...
 export MSCLI_MODEL=claude-3-5-sonnet
 ./ms-cli
@@ -171,7 +181,8 @@ export MSCLI_MODEL=anthropic/claude-3.5-sonnet
 
 Inside CLI:
 
-- `/model gpt-4o-mini` (switch model, keep current provider)
+- `/model kimi-k2.5` (switch model, keep current provider)
+- `/model anthropic:kimi-k2.5`
 - `/model openai-completion:gpt-4o-mini`
 - `/model openai-responses:gpt-4o`
 - `/model anthropic:claude-3-5-sonnet`

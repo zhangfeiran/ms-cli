@@ -113,12 +113,12 @@ func (a *Application) cmdModel(args []string) {
 func (a *Application) showCurrentModel() {
 	providerName := a.Config.Model.Provider
 	if providerName == "" {
-		providerName = "openai-completion"
+		providerName = "anthropic"
 	}
 	modelName := a.Config.Model.Model
 	url := a.Config.Model.URL
 	if url == "" {
-		url = "https://api.openai.com/v1"
+		url = llm.DefaultBaseURL(providerName)
 	}
 
 	apiKeyStatus := "not set"
@@ -138,8 +138,9 @@ To switch model:
   /model <provider>:<model>
 
 Examples:
-  /model gpt-4o
-  /model openai-completion:gpt-4o-mini
+  /model kimi-k2.5
+  /model anthropic:kimi-k2.5
+  /model openai-completion:gpt-4o
   /model openai-responses:gpt-4o
   /model anthropic:claude-3-5-sonnet`, providerName, url, modelName, apiKeyStatus)
 
@@ -205,7 +206,7 @@ func (a *Application) cmdTest() {
 	modelName := a.Config.Model.Model
 	url := a.Config.Model.URL
 	if url == "" {
-		url = "https://api.openai.com/v1"
+		url = llm.DefaultBaseURL(a.Config.Model.Provider)
 	}
 	apiKeyStatus := "not set"
 	if a.Config.Model.Key != "" {
@@ -222,7 +223,7 @@ func (a *Application) cmdTest() {
 			Message: "API configuration looks correct. Send a message to test the connection.",
 		}
 	} else {
-		a.EventCh <- model.Event{Type: model.AgentReply, Message: provideAPIKeyFirstMsg}
+		a.EventCh <- model.Event{Type: model.AgentReply, Message: a.missingLLMConfigMessage()}
 	}
 }
 
@@ -412,7 +413,8 @@ func (a *Application) cmdHelp() {
 
 Model Commands:
   /model                  Show current configuration
-  /model gpt-4o           Switch to gpt-4o
+  /model kimi-k2.5        Switch to kimi-k2.5
+  /model anthropic:kimi-k2.5
   /model openai-completion:gpt-4o
   /model openai-responses:gpt-4o
   /model anthropic:claude-3-5-sonnet

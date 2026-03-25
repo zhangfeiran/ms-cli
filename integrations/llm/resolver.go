@@ -11,7 +11,7 @@ import (
 
 const (
 	defaultOpenAIBaseURL    = "https://api.openai.com/v1"
-	defaultAnthropicBaseURL = "https://api.anthropic.com"
+	defaultAnthropicBaseURL = "https://api.kimi.com/coding/"
 	anthropicVersionHeader  = "2023-06-01"
 )
 
@@ -59,7 +59,7 @@ func resolveProviderKind(cfgProvider string) (ProviderKind, error) {
 	if raw := NormalizeProvider(cfgProvider); raw != "" {
 		return parseProviderKind(raw)
 	}
-	return ProviderOpenAICompletion, nil
+	return ProviderAnthropic, nil
 }
 
 func resolveAPIKey(kind ProviderKind, cfgKey string, opts ResolveOptions) (string, error) {
@@ -145,6 +145,15 @@ func defaultBaseURL(kind ProviderKind) string {
 		return defaultAnthropicBaseURL
 	}
 	return defaultOpenAIBaseURL
+}
+
+// DefaultBaseURL returns the built-in base URL for a provider name.
+func DefaultBaseURL(providerName string) string {
+	kind, err := resolveProviderKind(providerName)
+	if err != nil {
+		kind = ProviderAnthropic
+	}
+	return defaultBaseURL(kind)
 }
 
 func resolvedTimeout(timeoutSec int) time.Duration {

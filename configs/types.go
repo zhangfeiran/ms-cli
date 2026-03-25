@@ -29,7 +29,7 @@ const DefaultIssuesServerURL = ""
 
 func (c *Config) normalize() {
 	if strings.TrimSpace(c.Model.Provider) == "" {
-		c.Model.Provider = "openai-completion"
+		c.Model.Provider = "anthropic"
 	}
 }
 
@@ -107,9 +107,9 @@ type DockerConfig struct {
 func DefaultConfig() *Config {
 	cfg := &Config{
 		Model: ModelConfig{
-			URL:         "https://api.openai.com/v1",
-			Provider:    "openai-completion",
-			Model:       "gpt-4o-mini",
+			URL:         "https://api.kimi.com/coding/",
+			Provider:    "anthropic",
+			Model:       "kimi-k2.5",
 			Temperature: 0.7,
 			MaxTokens:   4096,
 			TimeoutSec:  180, // 3 minutes for longer conversations

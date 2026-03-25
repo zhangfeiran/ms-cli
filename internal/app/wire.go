@@ -66,6 +66,7 @@ type Application struct {
 
 	// Project tracking
 	projectService *projectpkg.Service
+	loginCred      *credentials
 
 	// Foreground chat task state
 	taskRunID   uint64
@@ -121,6 +122,18 @@ func Wire(cfg BootstrapConfig) (*Application, error) {
 		config.Model.Key = cfg.Key
 	}
 	configs.RefreshModelTokenDefaults(config, previousModel)
+
+	var savedCred *credentials
+	if cred, err := loadCredentials(); err == nil {
+		savedCred = cred
+		if strings.TrimSpace(config.Model.Key) == "" {
+			if profile, err := fetchServerProfile(cred.ServerURL, cred.Token); err == nil {
+				if apiKey := strings.TrimSpace(profile.APIKey); apiKey != "" {
+					config.Model.Key = apiKey
+				}
+			}
+		}
+	}
 
 	var provider llm.Provider
 	llmReady := true
@@ -248,12 +261,13 @@ func Wire(cfg BootstrapConfig) (*Application, error) {
 	}
 
 	// Auto-login from saved credentials.
-	if cred, err := loadCredentials(); err == nil {
-		app.bugService = bugs.NewService(bugs.NewRemoteStore(cred.ServerURL, cred.Token))
-		app.issueService = issuepkg.NewService(issuepkg.NewRemoteStore(cred.ServerURL, cred.Token))
-		app.projectService = projectpkg.NewService(projectpkg.NewRemoteStore(cred.ServerURL, cred.Token))
-		app.issueUser = cred.User
-		app.issueRole = cred.Role
+	if savedCred != nil {
+		app.bugService = bugs.NewService(bugs.NewRemoteStore(savedCred.ServerURL, savedCred.Token))
+		app.issueService = issuepkg.NewService(issuepkg.NewRemoteStore(savedCred.ServerURL, savedCred.Token))
+		app.projectService = projectpkg.NewService(projectpkg.NewRemoteStore(savedCred.ServerURL, savedCred.Token))
+		app.issueUser = savedCred.User
+		app.issueRole = savedCred.Role
+		app.loginCred = savedCred
 	}
 
 	return app, nil

@@ -137,7 +137,7 @@ func TestProcessInputKeepsPlainChatGlobalDuringTrainMode(t *testing.T) {
 	app.processInput("hello")
 
 	ev := drainUntil(t, app, model.AgentReply, 2*time.Second)
-	if ev.Message != provideAPIKeyFirstMsg {
+	if ev.Message != provideProviderAPIKeyOrLoginFirstMsg {
 		t.Fatalf("expected plain text to route to agent path, got %q", ev.Message)
 	}
 	if !app.isTrainMode() {

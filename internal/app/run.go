@@ -19,6 +19,7 @@ import (
 )
 
 const provideAPIKeyFirstMsg = "provide api key first"
+const provideProviderAPIKeyOrLoginFirstMsg = "provider api key or login first"
 const interruptActiveTaskToken = "__interrupt_active_task__"
 
 // Run parses CLI args, wires dependencies, and starts the application.
@@ -108,13 +109,24 @@ func (a *Application) runTask(description string) {
 	}
 
 	if !a.llmReady {
-		if err := a.recordUnavailableTurn(description, provideAPIKeyFirstMsg); err != nil {
+		if err := a.tryEnableRuntimeAPIKeyFromLogin(); err != nil {
+			emit(model.Event{
+				Type:     model.ToolError,
+				ToolName: "login",
+				Message:  err.Error(),
+			})
+		}
+	}
+
+	if !a.llmReady {
+		msg := a.missingLLMConfigMessage()
+		if err := a.recordUnavailableTurn(description, msg); err != nil {
 			a.emitToolError("context", "Failed to record local turn: %v", err)
 			return
 		}
 		emit(model.Event{
 			Type:    model.AgentReply,
-			Message: provideAPIKeyFirstMsg,
+			Message: msg,
 		})
 		persistSnapshot()
 		return
@@ -152,6 +164,13 @@ func (a *Application) runTask(description string) {
 		return
 	}
 	persistSnapshot()
+}
+
+func (a *Application) missingLLMConfigMessage() string {
+	if a != nil && a.loginCred != nil {
+		return provideAPIKeyFirstMsg
+	}
+	return provideProviderAPIKeyOrLoginFirstMsg
 }
 
 func (a *Application) beginTaskRun() (context.Context, uint64) {

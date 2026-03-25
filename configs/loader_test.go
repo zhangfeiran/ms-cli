@@ -8,8 +8,14 @@ import (
 
 func TestDefaultConfigProvider(t *testing.T) {
 	cfg := DefaultConfig()
-	if got, want := cfg.Model.Provider, "openai-completion"; got != want {
+	if got, want := cfg.Model.Provider, "anthropic"; got != want {
 		t.Fatalf("default provider = %q, want %q", got, want)
+	}
+	if got, want := cfg.Model.Model, "kimi-k2.5"; got != want {
+		t.Fatalf("default model = %q, want %q", got, want)
+	}
+	if got, want := cfg.Model.URL, "https://api.kimi.com/coding/"; got != want {
+		t.Fatalf("default url = %q, want %q", got, want)
 	}
 }
 
@@ -87,7 +93,7 @@ func TestLoadWithEnv_IgnoresConfigFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadWithEnv() error = %v", err)
 	}
-	if got, want := cfg.Model.Model, "gpt-4o-mini"; got != want {
+	if got, want := cfg.Model.Model, "kimi-k2.5"; got != want {
 		t.Fatalf("model = %q, want %q", got, want)
 	}
 }
@@ -104,13 +110,13 @@ func TestApplyEnvOverrides_OnlyMSCLIVariables(t *testing.T) {
 	cfg := DefaultConfig()
 	ApplyEnvOverrides(cfg)
 
-	if got, want := cfg.Model.Model, "gpt-4o-mini"; got != want {
+	if got, want := cfg.Model.Model, "kimi-k2.5"; got != want {
 		t.Fatalf("model after non-MSCLI env overrides = %q, want %q", got, want)
 	}
 	if got, want := cfg.Model.Key, ""; got != want {
 		t.Fatalf("key after non-MSCLI env overrides = %q, want %q", got, want)
 	}
-	if got, want := cfg.Model.URL, "https://api.openai.com/v1"; got != want {
+	if got, want := cfg.Model.URL, "https://api.kimi.com/coding/"; got != want {
 		t.Fatalf("url after non-MSCLI env overrides = %q, want %q", got, want)
 	}
 }
@@ -132,7 +138,7 @@ func TestLoadWithEnv_IgnoresWhitespaceOnlyModelEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadWithEnv() error = %v", err)
 	}
-	if got, want := cfg.Model.Model, "gpt-4o-mini"; got != want {
+	if got, want := cfg.Model.Model, "kimi-k2.5"; got != want {
 		t.Fatalf("model = %q, want %q", got, want)
 	}
 }
