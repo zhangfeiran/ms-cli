@@ -9,10 +9,9 @@ import (
 
 func TestAddToolResultWithFallbackOnOversizedContent(t *testing.T) {
 	cm := ctxmanager.NewManager(ctxmanager.ManagerConfig{
-		MaxTokens:           120,
+		ContextWindow:       120,
 		ReserveTokens:       20,
 		CompactionThreshold: 0.9,
-		MaxHistoryRounds:    2,
 	})
 
 	engine := &Engine{ctxManager: cm}

@@ -274,14 +274,21 @@ func (a *Application) replayHistory() {
 	if len(a.replayBacklog) == 0 || a.ctxManager == nil {
 		return
 	}
+	a.emitTokenUsageSnapshot()
+}
+
+func (a *Application) emitTokenUsageSnapshot() {
+	if a == nil || a.EventCh == nil || a.ctxManager == nil {
+		return
+	}
 	usage := a.ctxManager.TokenUsage()
-	if usage.Max <= 0 {
+	if usage.ContextWindow <= 0 {
 		return
 	}
 	a.EventCh <- model.Event{
 		Type:    model.TokenUpdate,
 		CtxUsed: usage.Current,
-		CtxMax:  usage.Max,
+		CtxMax:  usage.ContextWindow,
 	}
 }
 

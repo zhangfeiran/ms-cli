@@ -2,6 +2,7 @@ package loop
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"testing"
 
@@ -57,7 +58,7 @@ func (p *captureProvider) AvailableModels() []llm.ModelInfo {
 func newEngineForContextTests(provider llm.Provider) *Engine {
 	return NewEngine(EngineConfig{
 		MaxIterations: 1,
-		MaxTokens:     8000,
+		ContextWindow: 8000,
 	}, provider, tools.NewRegistry())
 }
 
@@ -65,7 +66,7 @@ func TestSetContextManagerPreservesSystemPrompt(t *testing.T) {
 	engine := newEngineForContextTests(&captureProvider{})
 
 	replacement := ctxmanager.NewManager(ctxmanager.ManagerConfig{
-		MaxTokens:     8000,
+		ContextWindow: 8000,
 		ReserveTokens: 4000,
 	})
 	if replacement.GetSystemPrompt() != nil {
@@ -87,7 +88,7 @@ func TestSetContextManagerKeepsExistingSystemPrompt(t *testing.T) {
 	engine := newEngineForContextTests(&captureProvider{})
 
 	replacement := ctxmanager.NewManager(ctxmanager.ManagerConfig{
-		MaxTokens:     8000,
+		ContextWindow: 8000,
 		ReserveTokens: 4000,
 	})
 	const customPrompt = "custom system prompt"
@@ -109,7 +110,7 @@ func TestRunUsesSystemPromptAfterContextManagerSwap(t *testing.T) {
 	engine := newEngineForContextTests(provider)
 
 	replacement := ctxmanager.NewManager(ctxmanager.ManagerConfig{
-		MaxTokens:     8000,
+		ContextWindow: 8000,
 		ReserveTokens: 4000,
 	})
 	engine.SetContextManager(replacement)
@@ -144,6 +145,121 @@ func TestRunUsesSystemPromptAfterContextManagerSwap(t *testing.T) {
 	if second.Content != "say hello" {
 		t.Fatalf("expected second message content to be user task, got %q", second.Content)
 	}
+}
+
+func TestRunPassesModelMaxTokensToProvider(t *testing.T) {
+	provider := &captureProvider{}
+	engine := NewEngine(EngineConfig{
+		MaxIterations: 1,
+		ContextWindow: 8000,
+		MaxTokens:     intPtr(1234),
+	}, provider, tools.NewRegistry())
+
+	_, err := engine.Run(Task{
+		ID:          "task-max-tokens",
+		Description: "say hello",
+	})
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	if provider.lastReq == nil {
+		t.Fatal("expected provider to receive completion request")
+	}
+	if provider.lastReq.MaxTokens == nil {
+		t.Fatal("provider.lastReq.MaxTokens = nil, want value")
+	}
+	if got, want := *provider.lastReq.MaxTokens, 1234; got != want {
+		t.Fatalf("provider.lastReq.MaxTokens = %d, want %d", got, want)
+	}
+}
+
+func TestRunCompletesWhenStopOccursAtIterationLimit(t *testing.T) {
+	provider := &scriptedStreamProvider{
+		responses: []*llm.CompletionResponse{{
+			Content:      "done",
+			FinishReason: llm.FinishStop,
+		}},
+	}
+
+	engine := NewEngine(EngineConfig{
+		MaxIterations: 1,
+		ContextWindow: 4096,
+	}, provider, tools.NewRegistry())
+
+	events, err := engine.Run(Task{
+		ID:          "task-complete-at-limit",
+		Description: "say done",
+	})
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("expected events, got none")
+	}
+
+	last := events[len(events)-1]
+	if got, want := last.Type, EventTaskCompleted; got != want {
+		t.Fatalf("last event type = %q, want %q", got, want)
+	}
+}
+
+func TestRunFailsWhenIterationBudgetExpiresBeforeCompletion(t *testing.T) {
+	args, err := json.Marshal(map[string]string{"path": "README.md"})
+	if err != nil {
+		t.Fatalf("marshal tool args: %v", err)
+	}
+
+	provider := &scriptedStreamProvider{
+		responses: []*llm.CompletionResponse{
+			{
+				ToolCalls: []llm.ToolCall{{
+					ID:   "call-read-1",
+					Type: "function",
+					Function: llm.ToolCallFunc{
+						Name:      "read",
+						Arguments: args,
+					},
+				}},
+				FinishReason: llm.FinishToolCalls,
+			},
+			{
+				Content:      "done",
+				FinishReason: llm.FinishStop,
+			},
+		},
+	}
+
+	registry := tools.NewRegistry()
+	registry.MustRegister(stubTool{name: "read", content: "file contents", summary: "1 line"})
+
+	engine := NewEngine(EngineConfig{
+		MaxIterations: 1,
+		ContextWindow: 4096,
+	}, provider, registry)
+
+	events, err := engine.Run(Task{
+		ID:          "task-exceed-limit",
+		Description: "read the file",
+	})
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("expected events, got none")
+	}
+
+	last := events[len(events)-1]
+	if got, want := last.Type, EventTaskFailed; got != want {
+		t.Fatalf("last event type = %q, want %q", got, want)
+	}
+	if got, want := last.Message, "Task exceeded maximum iterations."; got != want {
+		t.Fatalf("last event message = %q, want %q", got, want)
+	}
+}
+
+func intPtr(v int) *int {
+	return &v
 }
 
 type captureStreamIterator struct {

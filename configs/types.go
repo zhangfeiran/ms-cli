@@ -10,7 +10,7 @@ import (
 type Config struct {
 	Model         ModelConfig                  `yaml:"model"`
 	ModelProfiles map[string]ModelTokenProfile `yaml:"model_profiles,omitempty"`
-	Budget        BudgetConfig                 `yaml:"budget"`
+	Request       RequestConfig                `yaml:"-"`
 	UI            UIConfig                     `yaml:"ui"`
 	Permissions   PermissionsConfig            `yaml:"permissions"`
 	Context       ContextConfig                `yaml:"context"`
@@ -26,6 +26,7 @@ type IssuesConfig struct {
 }
 
 const DefaultIssuesServerURL = ""
+const DefaultRequestMaxIterations = 100
 
 func (c *Config) normalize() {
 	if strings.TrimSpace(c.Model.Provider) == "" {
@@ -35,21 +36,19 @@ func (c *Config) normalize() {
 
 // ModelConfig holds the LLM model configuration.
 type ModelConfig struct {
-	URL         string            `yaml:"url,omitempty"`
-	Key         string            `yaml:"key,omitempty"`
-	Provider    string            `yaml:"provider,omitempty"`
-	Model       string            `yaml:"model"`
-	Temperature float64           `yaml:"temperature"`
-	MaxTokens   int               `yaml:"max_tokens"`
-	TimeoutSec  int               `yaml:"timeout_sec"`
-	Headers     map[string]string `yaml:"headers,omitempty"`
+	URL        string            `yaml:"url,omitempty"`
+	Key        string            `yaml:"key,omitempty"`
+	Provider   string            `yaml:"provider,omitempty"`
+	Model      string            `yaml:"model"`
+	TimeoutSec int               `yaml:"timeout_sec"`
+	Headers    map[string]string `yaml:"headers,omitempty"`
 }
 
-// BudgetConfig holds the budget control configuration.
-type BudgetConfig struct {
-	MaxTokens  int     `yaml:"max_tokens"`
-	MaxCostUSD float64 `yaml:"max_cost_usd"`
-	DailyLimit int     `yaml:"daily_limit,omitempty"`
+// RequestConfig holds optional per-request overrides sourced from env.
+type RequestConfig struct {
+	Temperature   *float64 `yaml:"-"`
+	MaxTokens     *int     `yaml:"-"`
+	MaxIterations *int     `yaml:"-"`
 }
 
 // UIConfig holds the UI configuration.
@@ -78,7 +77,6 @@ type ContextConfig struct {
 	Window              int     `yaml:"window"`
 	ReserveTokens       int     `yaml:"reserve_tokens"`
 	CompactionThreshold float64 `yaml:"compaction_threshold"`
-	MaxHistoryRounds    int     `yaml:"max_history_rounds"`
 }
 
 // MemoryConfig holds the memory system configuration.
@@ -109,20 +107,14 @@ type DockerConfig struct {
 
 // DefaultConfig returns a configuration with default values.
 func DefaultConfig() *Config {
+	defaultMaxIterations := DefaultRequestMaxIterations
 	cfg := &Config{
 		Model: ModelConfig{
-			URL:         "https://api.openai.com/v1",
-			Provider:    "openai-completion",
-			Model:       "gpt-4o-mini",
-			Temperature: 0.7,
-			MaxTokens:   4096,
-			TimeoutSec:  180, // 3 minutes for longer conversations
-			Headers:     make(map[string]string),
-		},
-		Budget: BudgetConfig{
-			MaxTokens:  32768,
-			MaxCostUSD: 10.0,
-			DailyLimit: 0,
+			URL:        "https://api.openai.com/v1",
+			Provider:   "openai-completion",
+			Model:      "gpt-4o-mini",
+			TimeoutSec: 180, // 3 minutes for longer conversations
+			Headers:    make(map[string]string),
 		},
 		UI: UIConfig{
 			Enabled:      true,
@@ -144,8 +136,7 @@ func DefaultConfig() *Config {
 		Context: ContextConfig{
 			Window:              200000,
 			ReserveTokens:       4000,
-			CompactionThreshold: 0.85,
-			MaxHistoryRounds:    10,
+			CompactionThreshold: 0.9,
 		},
 		Memory: MemoryConfig{
 			Enabled:   true,
@@ -155,6 +146,9 @@ func DefaultConfig() *Config {
 			TTLHours:  168,             // 7 days
 		},
 		ModelProfiles: make(map[string]ModelTokenProfile),
+		Request: RequestConfig{
+			MaxIterations: &defaultMaxIterations,
+		},
 		Issues: IssuesConfig{
 			ServerURL: DefaultIssuesServerURL,
 		},
@@ -191,12 +185,18 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	if c.Model.Temperature < 0 || c.Model.Temperature > 2 {
-		return fmt.Errorf("temperature must be between 0 and 2")
+	if c.Request.Temperature != nil {
+		if *c.Request.Temperature < 0 || *c.Request.Temperature > 2 {
+			return fmt.Errorf("temperature must be between 0 and 2")
+		}
 	}
 
-	if c.Budget.MaxTokens < 0 {
+	if c.Request.MaxTokens != nil && *c.Request.MaxTokens < 0 {
 		return fmt.Errorf("max_tokens must be non-negative")
+	}
+
+	if c.Request.MaxIterations != nil && *c.Request.MaxIterations < 0 {
+		return fmt.Errorf("max_iterations must be non-negative")
 	}
 
 	if c.Context.Window < c.Context.ReserveTokens {
@@ -220,12 +220,6 @@ func (c *Config) Merge(other *Config) {
 	if other.Model.Model != "" {
 		c.Model.Model = other.Model.Model
 	}
-	if other.Model.Temperature != 0 {
-		c.Model.Temperature = other.Model.Temperature
-	}
-	if other.Model.MaxTokens != 0 {
-		c.Model.MaxTokens = other.Model.MaxTokens
-	}
 	if other.Model.TimeoutSec != 0 {
 		c.Model.TimeoutSec = other.Model.TimeoutSec
 	}
@@ -237,11 +231,17 @@ func (c *Config) Merge(other *Config) {
 		c.ModelProfiles = other.ModelProfiles
 	}
 
-	if other.Budget.MaxTokens != 0 {
-		c.Budget.MaxTokens = other.Budget.MaxTokens
+	if other.Request.Temperature != nil {
+		v := *other.Request.Temperature
+		c.Request.Temperature = &v
 	}
-	if other.Budget.MaxCostUSD != 0 {
-		c.Budget.MaxCostUSD = other.Budget.MaxCostUSD
+	if other.Request.MaxTokens != nil {
+		v := *other.Request.MaxTokens
+		c.Request.MaxTokens = &v
+	}
+	if other.Request.MaxIterations != nil {
+		v := *other.Request.MaxIterations
+		c.Request.MaxIterations = &v
 	}
 
 	if other.Context.Window != 0 {
@@ -253,9 +253,6 @@ func (c *Config) Merge(other *Config) {
 	if other.Context.CompactionThreshold != 0 {
 		c.Context.CompactionThreshold = other.Context.CompactionThreshold
 	}
-	if other.Context.MaxHistoryRounds != 0 {
-		c.Context.MaxHistoryRounds = other.Context.MaxHistoryRounds
-	}
 }
 
 // UnmarshalYAML supports both context.window and legacy context.max_tokens.
@@ -265,7 +262,6 @@ func (c *ContextConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 		LegacyMaxTokens     int     `yaml:"max_tokens"`
 		ReserveTokens       int     `yaml:"reserve_tokens"`
 		CompactionThreshold float64 `yaml:"compaction_threshold"`
-		MaxHistoryRounds    int     `yaml:"max_history_rounds"`
 	}
 
 	var raw rawContextConfig
@@ -279,7 +275,6 @@ func (c *ContextConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	}
 	c.ReserveTokens = raw.ReserveTokens
 	c.CompactionThreshold = raw.CompactionThreshold
-	c.MaxHistoryRounds = raw.MaxHistoryRounds
 
 	return nil
 }

@@ -2,18 +2,16 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"os"
-	"path/filepath"
-	"strings"
 	"testing"
-	"time"
 
+	"github.com/vigo999/ms-cli/agent/loop"
 	"github.com/vigo999/ms-cli/configs"
 	"github.com/vigo999/ms-cli/integrations/llm"
-	"github.com/vigo999/ms-cli/permission"
-	"github.com/vigo999/ms-cli/ui/model"
 )
 
 func TestInitProviderAnthropic(t *testing.T) {
@@ -119,258 +117,306 @@ func providerResolveNoOverrides() llm.ResolveOptions {
 	return llm.ResolveOptions{}
 }
 
-func TestWire_ConfiguresPermissionPromptUI(t *testing.T) {
+type captureStreamProvider struct {
+	lastReq *llm.CompletionRequest
+}
+
+func (p *captureStreamProvider) Name() string {
+	return "capture"
+}
+
+func (p *captureStreamProvider) Complete(context.Context, *llm.CompletionRequest) (*llm.CompletionResponse, error) {
+	return nil, io.EOF
+}
+
+func (p *captureStreamProvider) CompleteStream(ctx context.Context, req *llm.CompletionRequest) (llm.StreamIterator, error) {
+	copied := *req
+	copied.Messages = append([]llm.Message(nil), req.Messages...)
+	copied.Tools = append([]llm.Tool(nil), req.Tools...)
+	p.lastReq = &copied
+
+	return &captureTestStreamIterator{
+		chunks: []llm.StreamChunk{{
+			Content:      "ok",
+			FinishReason: llm.FinishStop,
+		}},
+	}, nil
+}
+
+func (p *captureStreamProvider) SupportsTools() bool {
+	return true
+}
+
+func (p *captureStreamProvider) AvailableModels() []llm.ModelInfo {
+	return nil
+}
+
+type captureTestStreamIterator struct {
+	chunks []llm.StreamChunk
+	index  int
+}
+
+func (it *captureTestStreamIterator) Next() (*llm.StreamChunk, error) {
+	if it.index >= len(it.chunks) {
+		return nil, io.EOF
+	}
+	chunk := it.chunks[it.index]
+	it.index++
+	return &chunk, nil
+}
+
+func (it *captureTestStreamIterator) Close() error {
+	return nil
+}
+
+type scriptedAppStreamProvider struct {
+	responses []*llm.CompletionResponse
+}
+
+func (p *scriptedAppStreamProvider) Name() string {
+	return "scripted"
+}
+
+func (p *scriptedAppStreamProvider) Complete(context.Context, *llm.CompletionRequest) (*llm.CompletionResponse, error) {
+	return nil, io.EOF
+}
+
+func (p *scriptedAppStreamProvider) CompleteStream(context.Context, *llm.CompletionRequest) (llm.StreamIterator, error) {
+	if len(p.responses) == 0 {
+		return &captureTestStreamIterator{}, nil
+	}
+
+	resp := p.responses[0]
+	p.responses = p.responses[1:]
+
+	return &captureTestStreamIterator{
+		chunks: []llm.StreamChunk{{
+			Content:      resp.Content,
+			ToolCalls:    append([]llm.ToolCall(nil), resp.ToolCalls...),
+			FinishReason: resp.FinishReason,
+			Usage:        &resp.Usage,
+		}},
+	}, nil
+}
+
+func (p *scriptedAppStreamProvider) SupportsTools() bool {
+	return true
+}
+
+func (p *scriptedAppStreamProvider) AvailableModels() []llm.ModelInfo {
+	return nil
+}
+
+func TestWirePassesMSCLIMaxTokensToModelRequests(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("MSCLI_API_KEY", "")
-	t.Setenv("OPENAI_API_KEY", "")
-	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
-	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("MSCLI_PROVIDER", "anthropic")
+	t.Setenv("MSCLI_API_KEY", "anthropic-token")
+	t.Setenv("MSCLI_MODEL", "claude-sonnet-4-5")
+	t.Setenv("MSCLI_MAX_TOKENS", "2048")
 
 	tempDir := t.TempDir()
 	t.Chdir(tempDir)
+
+	provider := &captureStreamProvider{}
+	origBuildProvider := buildProvider
+	buildProvider = func(resolved llm.ResolvedConfig) (llm.Provider, error) {
+		return provider, nil
+	}
+	defer func() { buildProvider = origBuildProvider }()
 
 	app, err := Wire(BootstrapConfig{})
 	if err != nil {
 		t.Fatalf("Wire() error = %v", err)
 	}
 
-	if app.permissionUI == nil {
-		t.Fatal("permissionUI = nil, want initialized prompt UI")
-	}
-
-	permSvc, ok := app.permService.(*permission.DefaultPermissionService)
-	if !ok {
-		t.Fatalf("permService type = %T, want *permission.DefaultPermissionService", app.permService)
-	}
-
-	done := make(chan struct {
-		granted bool
-		err     error
-	}, 1)
-	go func() {
-		granted, err := permSvc.Request(context.Background(), "write", "", "tmp.txt")
-		done <- struct {
-			granted bool
-			err     error
-		}{granted: granted, err: err}
-	}()
-
-	select {
-	case ev := <-app.EventCh:
-		if ev.Type != model.PermissionPrompt {
-			t.Fatalf("event type = %s, want %s", ev.Type, model.PermissionPrompt)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for permission prompt event")
-	}
-
-	app.processInput("yes")
-
-	select {
-	case out := <-done:
-		if out.err != nil {
-			t.Fatalf("Request() err = %v", out.err)
-		}
-		if !out.granted {
-			t.Fatal("Request() granted = false, want true")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for permission request completion")
-	}
-}
-
-func TestWire_LegacyPermissionSettingsErrorDeferredToTUI(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("MSCLI_API_KEY", "")
-	t.Setenv("OPENAI_API_KEY", "")
-	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
-	t.Setenv("ANTHROPIC_API_KEY", "")
-
-	tempDir := t.TempDir()
-	t.Chdir(tempDir)
-
-	legacyPath := filepath.Join(tempDir, ".ms-cli", "permissions.json")
-	if err := os.MkdirAll(filepath.Dir(legacyPath), 0755); err != nil {
-		t.Fatalf("mkdir permissions dir: %v", err)
-	}
-	if err := os.WriteFile(legacyPath, []byte(`[]`), 0644); err != nil {
-		t.Fatalf("write legacy permissions: %v", err)
-	}
-
-	app, err := Wire(BootstrapConfig{})
+	_, err = app.Engine.Run(loop.Task{
+		ID:          "wire-max-tokens",
+		Description: "ping",
+	})
 	if err != nil {
-		t.Fatalf("Wire() error = %v, want nil and deferred prompt", err)
+		t.Fatalf("Engine.Run() error = %v", err)
 	}
-	if app.permissionSettingsIssue == nil {
-		t.Fatal("permissionSettingsIssue = nil, want deferred issue")
+
+	if provider.lastReq == nil {
+		t.Fatal("expected provider to receive completion request")
 	}
-	if !strings.Contains(app.permissionSettingsIssue.Detail, "legacy array") {
-		t.Fatalf("detail = %q, want legacy array error", app.permissionSettingsIssue.Detail)
+	if provider.lastReq.MaxTokens == nil {
+		t.Fatal("provider.lastReq.MaxTokens = nil, want value")
+	}
+	if got, want := *provider.lastReq.MaxTokens, 2048; got != want {
+		t.Fatalf("provider.lastReq.MaxTokens = %d, want %d", got, want)
+	}
+	if provider.lastReq.Temperature != nil {
+		t.Fatalf("provider.lastReq.Temperature = %v, want nil", *provider.lastReq.Temperature)
 	}
 }
 
-func TestWire_LoadsScopedPermissionSettingsFiles(t *testing.T) {
+func TestWireOmitsRequestOverridesWhenEnvUnset(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("MSCLI_API_KEY", "")
-	t.Setenv("OPENAI_API_KEY", "")
-	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
-	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("MSCLI_PROVIDER", "openai-completion")
+	t.Setenv("MSCLI_API_KEY", "token")
+	t.Setenv("MSCLI_MODEL", "gpt-4o-mini")
 
 	tempDir := t.TempDir()
 	t.Chdir(tempDir)
 
-	localPath := filepath.Join(tempDir, ".ms-cli", "permissions.json")
-	if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
-		t.Fatalf("mkdir settings dir: %v", err)
+	provider := &captureStreamProvider{}
+	origBuildProvider := buildProvider
+	buildProvider = func(resolved llm.ResolvedConfig) (llm.Provider, error) {
+		return provider, nil
 	}
-	if err := os.WriteFile(localPath, []byte(`{"permissions":{"allow":["Bash(ls -la)"]}}`), 0644); err != nil {
-		t.Fatalf("write permissions.json: %v", err)
-	}
+	defer func() { buildProvider = origBuildProvider }()
 
 	app, err := Wire(BootstrapConfig{})
 	if err != nil {
 		t.Fatalf("Wire() error = %v", err)
 	}
 
-	permSvc, ok := app.permService.(*permission.DefaultPermissionService)
-	if !ok {
-		t.Fatalf("permService type = %T, want *permission.DefaultPermissionService", app.permService)
+	_, err = app.Engine.Run(loop.Task{
+		ID:          "wire-no-overrides",
+		Description: "ping",
+	})
+	if err != nil {
+		t.Fatalf("Engine.Run() error = %v", err)
 	}
-	if got := permSvc.Check("shell", "ls -la"); got != permission.PermissionAllowAlways {
-		t.Fatalf("Check(shell ls -la) = %s, want %s", got, permission.PermissionAllowAlways)
+
+	if provider.lastReq == nil {
+		t.Fatal("expected provider to receive completion request")
+	}
+	if provider.lastReq.MaxTokens != nil {
+		t.Fatalf("provider.lastReq.MaxTokens = %d, want nil", *provider.lastReq.MaxTokens)
+	}
+	if provider.lastReq.Temperature != nil {
+		t.Fatalf("provider.lastReq.Temperature = %v, want nil", *provider.lastReq.Temperature)
 	}
 }
 
-func TestWire_SessionPermissionStorePathAndPersist(t *testing.T) {
+func TestWirePassesMSCLITemperatureToModelRequests(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("MSCLI_API_KEY", "")
-	t.Setenv("OPENAI_API_KEY", "")
-	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
-	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("MSCLI_PROVIDER", "openai-completion")
+	t.Setenv("MSCLI_API_KEY", "token")
+	t.Setenv("MSCLI_MODEL", "gpt-4o-mini")
+	t.Setenv("MSCLI_TEMPERATURE", "0.25")
 
-	workDir := t.TempDir()
-	t.Chdir(workDir)
+	tempDir := t.TempDir()
+	t.Chdir(tempDir)
+
+	provider := &captureStreamProvider{}
+	origBuildProvider := buildProvider
+	buildProvider = func(resolved llm.ResolvedConfig) (llm.Provider, error) {
+		return provider, nil
+	}
+	defer func() { buildProvider = origBuildProvider }()
 
 	app, err := Wire(BootstrapConfig{})
 	if err != nil {
 		t.Fatalf("Wire() error = %v", err)
 	}
-	t.Cleanup(func() { _ = app.session.Close() })
 
-	permSvc, ok := app.permService.(*permission.DefaultPermissionService)
-	if !ok {
-		t.Fatalf("permService type = %T, want *permission.DefaultPermissionService", app.permService)
-	}
-
-	rememberPermissionViaUI(t, app, permSvc, "shell", "ls -la", "")
-
-	sessionPermPath := filepath.Join(filepath.Dir(app.session.Path()), "permissions.json")
-	raw, err := os.ReadFile(sessionPermPath)
+	_, err = app.Engine.Run(loop.Task{
+		ID:          "wire-temperature",
+		Description: "ping",
+	})
 	if err != nil {
-		t.Fatalf("ReadFile(%s) err = %v", sessionPermPath, err)
-	}
-	if !strings.Contains(string(raw), "Bash(ls -la)") {
-		t.Fatalf("session permissions file = %s, want Bash(ls -la)", string(raw))
+		t.Fatalf("Engine.Run() error = %v", err)
 	}
 
-	globalPath := filepath.Join(workDir, ".ms-cli", "permissions.state.json")
-	if _, err := os.Stat(globalPath); !os.IsNotExist(err) {
-		t.Fatalf("global store file should not exist, path=%s err=%v", globalPath, err)
+	if provider.lastReq == nil {
+		t.Fatal("expected provider to receive completion request")
+	}
+	if provider.lastReq.Temperature == nil {
+		t.Fatal("provider.lastReq.Temperature = nil, want value")
+	}
+	if got, want := *provider.lastReq.Temperature, float32(0.25); got != want {
+		t.Fatalf("provider.lastReq.Temperature = %v, want %v", got, want)
 	}
 }
 
-func TestWire_ResumeLoadsSessionScopedPermissionsOnly(t *testing.T) {
+func TestWireAndSetProviderRespectMSCLIMaxIterations(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("MSCLI_API_KEY", "")
-	t.Setenv("OPENAI_API_KEY", "")
-	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
-	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("MSCLI_PROVIDER", "openai-completion")
+	t.Setenv("MSCLI_API_KEY", "token")
+	t.Setenv("MSCLI_MODEL", "gpt-4o-mini")
+	t.Setenv("MSCLI_MAX_ITERATIONS", "1")
+	t.Setenv("MSCLI_PERMISSIONS_SKIP", "true")
 
-	workDir := t.TempDir()
-	t.Chdir(workDir)
+	tempDir := t.TempDir()
+	t.Chdir(tempDir)
 
-	first, err := Wire(BootstrapConfig{})
+	if err := os.WriteFile("README.md", []byte("hello"), 0600); err != nil {
+		t.Fatalf("write README.md: %v", err)
+	}
+
+	args, err := json.Marshal(map[string]string{"path": "README.md"})
 	if err != nil {
-		t.Fatalf("first Wire() error = %v", err)
+		t.Fatalf("marshal tool args: %v", err)
 	}
-	t.Cleanup(func() { _ = first.session.Close() })
-	firstPermSvc, ok := first.permService.(*permission.DefaultPermissionService)
-	if !ok {
-		t.Fatalf("first permService type = %T, want *permission.DefaultPermissionService", first.permService)
-	}
-	rememberPermissionViaUI(t, first, firstPermSvc, "shell", "ls -la", "")
-	sessionID := first.session.ID()
 
-	resumed, err := Wire(BootstrapConfig{Resume: true, ResumeSessionID: sessionID})
+	newProvider := func() llm.Provider {
+		return &scriptedAppStreamProvider{
+			responses: []*llm.CompletionResponse{
+				{
+					ToolCalls: []llm.ToolCall{{
+						ID:   "call-read-1",
+						Type: "function",
+						Function: llm.ToolCallFunc{
+							Name:      "read",
+							Arguments: args,
+						},
+					}},
+					FinishReason: llm.FinishToolCalls,
+				},
+				{
+					Content:      "done",
+					FinishReason: llm.FinishStop,
+				},
+			},
+		}
+	}
+
+	origBuildProvider := buildProvider
+	buildProvider = func(resolved llm.ResolvedConfig) (llm.Provider, error) {
+		return newProvider(), nil
+	}
+	defer func() { buildProvider = origBuildProvider }()
+
+	app, err := Wire(BootstrapConfig{})
 	if err != nil {
-		t.Fatalf("resume Wire() error = %v", err)
-	}
-	t.Cleanup(func() { _ = resumed.session.Close() })
-	resumedPermSvc, ok := resumed.permService.(*permission.DefaultPermissionService)
-	if !ok {
-		t.Fatalf("resumed permService type = %T, want *permission.DefaultPermissionService", resumed.permService)
-	}
-	if got := resumedPermSvc.Check("shell", "ls -la"); got != permission.PermissionAllowSession {
-		t.Fatalf("resumed Check(shell ls -la) = %s, want %s", got, permission.PermissionAllowSession)
+		t.Fatalf("Wire() error = %v", err)
 	}
 
-	fresh, err := Wire(BootstrapConfig{})
-	if err != nil {
-		t.Fatalf("fresh Wire() error = %v", err)
-	}
-	t.Cleanup(func() { _ = fresh.session.Close() })
-	freshPermSvc, ok := fresh.permService.(*permission.DefaultPermissionService)
-	if !ok {
-		t.Fatalf("fresh permService type = %T, want *permission.DefaultPermissionService", fresh.permService)
-	}
-	if got := freshPermSvc.Check("shell", "ls -la"); got == permission.PermissionAllowSession {
-		t.Fatalf("fresh Check(shell ls -la) = %s, want not %s", got, permission.PermissionAllowSession)
-	}
-}
+	assertMaxIterationsFailure := func(taskID string) {
+		t.Helper()
 
-func rememberPermissionViaUI(t *testing.T, app *Application, permSvc *permission.DefaultPermissionService, tool, action, path string) {
-	t.Helper()
-	if err := app.activateSessionPersistence(); err != nil {
-		t.Fatalf("activateSessionPersistence() err = %v", err)
-	}
-
-	done := make(chan struct {
-		granted bool
-		err     error
-	}, 1)
-	go func() {
-		granted, err := permSvc.Request(context.Background(), tool, action, path)
-		done <- struct {
-			granted bool
-			err     error
-		}{granted: granted, err: err}
-	}()
-
-	select {
-	case ev := <-app.EventCh:
-		if ev.Type != model.PermissionPrompt {
-			t.Fatalf("event type = %s, want %s", ev.Type, model.PermissionPrompt)
+		events, err := app.Engine.Run(loop.Task{
+			ID:          taskID,
+			Description: "read the file",
+		})
+		if err != nil {
+			t.Fatalf("Engine.Run() error = %v", err)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for permission prompt event")
+		if len(events) == 0 {
+			t.Fatal("expected events, got none")
+		}
+
+		last := events[len(events)-1]
+		if got, want := last.Type, loop.EventTaskFailed; got != want {
+			t.Fatalf("last event type = %q, want %q", got, want)
+		}
+		if got, want := last.Message, "Task exceeded maximum iterations."; got != want {
+			t.Fatalf("last event message = %q, want %q", got, want)
+		}
 	}
 
-	app.processInput("2")
+	assertMaxIterationsFailure("wire-max-iterations")
 
-	select {
-	case out := <-done:
-		if out.err != nil {
-			t.Fatalf("Request() err = %v", out.err)
-		}
-		if !out.granted {
-			t.Fatal("Request() granted = false, want true")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for permission request completion")
+	if err := app.SetProvider("", "gpt-4o-mini", ""); err != nil {
+		t.Fatalf("SetProvider() error = %v", err)
 	}
+
+	assertMaxIterationsFailure("set-provider-max-iterations")
 }

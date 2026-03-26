@@ -15,12 +15,8 @@ func TestNewManager(t *testing.T) {
 		t.Fatal("NewManager returned nil")
 	}
 
-	if mgr.config.MaxTokens != 24000 {
-		t.Errorf("Expected MaxTokens to be 24000, got %d", mgr.config.MaxTokens)
-	}
-
-	if mgr.budget == nil {
-		t.Error("Budget should be initialized")
+	if mgr.config.ContextWindow != 24000 {
+		t.Errorf("Expected ContextWindow to be 24000, got %d", mgr.config.ContextWindow)
 	}
 
 	if mgr.tokenizer == nil {
@@ -155,40 +151,34 @@ func TestTokenUsage(t *testing.T) {
 		t.Error("Token usage should increase after adding message")
 	}
 
-	if usage.Max != 24000 {
-		t.Errorf("Expected Max to be 24000, got %d", usage.Max)
+	if usage.ContextWindow != 24000 {
+		t.Errorf("Expected ContextWindow to be 24000, got %d", usage.ContextWindow)
 	}
 }
 
-func TestSetTokenLimits(t *testing.T) {
+func TestSetContextWindowLimits(t *testing.T) {
 	mgr := NewManager(DefaultManagerConfig())
 	mgr.SetSystemPrompt("system prompt")
 	if err := mgr.AddMessage(llm.NewUserMessage("hello world")); err != nil {
 		t.Fatalf("AddMessage failed: %v", err)
 	}
 
-	if err := mgr.SetTokenLimits(200000, 4000); err != nil {
-		t.Fatalf("SetTokenLimits failed: %v", err)
+	if err := mgr.SetContextWindowLimits(200000, 4000); err != nil {
+		t.Fatalf("SetContextWindowLimits failed: %v", err)
 	}
 
 	usage := mgr.TokenUsage()
-	if got, want := usage.Max, 200000; got != want {
-		t.Fatalf("usage.Max = %d, want %d", got, want)
+	if got, want := usage.ContextWindow, 200000; got != want {
+		t.Fatalf("usage.ContextWindow = %d, want %d", got, want)
 	}
 	if got, want := usage.Reserved, 4000; got != want {
 		t.Fatalf("usage.Reserved = %d, want %d", got, want)
-	}
-	if mgr.budget == nil {
-		t.Fatal("budget should be reinitialized")
-	}
-	if got, want := mgr.budget.GetStats().MaxTokens, 200000; got != want {
-		t.Fatalf("budget max tokens = %d, want %d", got, want)
 	}
 }
 
 func TestIsWithinBudget(t *testing.T) {
 	cfg := DefaultManagerConfig()
-	cfg.MaxTokens = 100
+	cfg.ContextWindow = 100
 	cfg.ReserveTokens = 20
 
 	mgr := NewManager(cfg)
@@ -224,7 +214,7 @@ func TestCompactionThresholdSupportsRatioAndPercent(t *testing.T) {
 
 func TestAddMessageRejectsSingleOversizedMessage(t *testing.T) {
 	cfg := DefaultManagerConfig()
-	cfg.MaxTokens = 100
+	cfg.ContextWindow = 100
 	cfg.ReserveTokens = 20
 	mgr := NewManager(cfg)
 
@@ -264,26 +254,62 @@ func TestGetStats(t *testing.T) {
 	}
 }
 
-func TestCompact(t *testing.T) {
+func TestCompactManuallyHalvesCurrentUsage(t *testing.T) {
 	cfg := DefaultManagerConfig()
-	cfg.MaxHistoryRounds = 2
+	cfg.ContextWindow = 100
+	cfg.ReserveTokens = 10
+	cfg.EnableSmartCompact = false
 
 	mgr := NewManager(cfg)
 
-	// Add many messages
-	for i := 0; i < 10; i++ {
-		mgr.AddMessage(llm.NewUserMessage("Message"))
+	for i := 0; i < 3; i++ {
+		if err := mgr.AddMessage(llm.NewUserMessage(strings.Repeat("x", 80))); err != nil {
+			t.Fatalf("AddMessage failed: %v", err)
+		}
 	}
 
+	beforeUsage := mgr.TokenUsage().Current
+	beforeCount := len(mgr.GetNonSystemMessages())
 	err := mgr.Compact()
 	if err != nil {
 		t.Fatalf("Compact failed: %v", err)
 	}
 
-	// After compaction, message count should be reduced
-	messages := mgr.GetNonSystemMessages()
-	if len(messages) > 10 {
-		t.Errorf("Expected messages to be compacted, got %d", len(messages))
+	if got := mgr.TokenUsage().Current; got > beforeUsage/2 {
+		t.Fatalf("token usage after manual Compact = %d, want <= %d", got, beforeUsage/2)
+	}
+	if got := len(mgr.GetNonSystemMessages()); got >= beforeCount {
+		t.Fatalf("message count after manual Compact = %d, want less than %d", got, beforeCount)
+	}
+}
+
+func TestAddMessageCompactsToTargetAfterThresholdExceeded(t *testing.T) {
+	cfg := DefaultManagerConfig()
+	cfg.ContextWindow = 100
+	cfg.ReserveTokens = 10
+	cfg.EnableSmartCompact = false
+
+	mgr := NewManager(cfg)
+
+	for i := 0; i < 3; i++ {
+		if err := mgr.AddMessage(llm.NewUserMessage(strings.Repeat("x", 80))); err != nil {
+			t.Fatalf("AddMessage #%d failed: %v", i+1, err)
+		}
+	}
+
+	if got := mgr.TokenUsage().Current; got >= 90 {
+		t.Fatalf("token usage before threshold test = %d, want below 90", got)
+	}
+
+	if err := mgr.AddMessage(llm.NewUserMessage(strings.Repeat("x", 80))); err != nil {
+		t.Fatalf("AddMessage triggering compaction failed: %v", err)
+	}
+
+	if got := mgr.TokenUsage().Current; got > 50 {
+		t.Fatalf("token usage after compaction = %d, want <= 50", got)
+	}
+	if got := len(mgr.GetNonSystemMessages()); got >= 4 {
+		t.Fatalf("message count after compaction = %d, want fewer than 4", got)
 	}
 }
 
@@ -321,43 +347,6 @@ func TestTruncateTo(t *testing.T) {
 	messages := mgr.GetNonSystemMessages()
 	if len(messages) != 2 {
 		t.Errorf("Expected 2 messages after truncate, got %d", len(messages))
-	}
-}
-
-func TestBudgetAllocation(t *testing.T) {
-	allocation := DefaultBudgetAllocation()
-
-	if allocation.SystemPercent+allocation.HistoryPercent+
-		allocation.ToolResultPercent+allocation.ReservePercent != 100 {
-		t.Error("Budget allocation percentages should sum to 100")
-	}
-
-	budget, err := NewBudget(10000, allocation)
-	if err != nil {
-		t.Fatalf("NewBudget failed: %v", err)
-	}
-
-	if budget.GetSystemBudget() <= 0 {
-		t.Error("System budget should be positive")
-	}
-
-	if budget.GetHistoryBudget() <= 0 {
-		t.Error("History budget should be positive")
-	}
-}
-
-func TestBudgetValidation(t *testing.T) {
-	// Invalid: sum != 100
-	invalidAllocation := BudgetAllocation{
-		SystemPercent:     50,
-		HistoryPercent:    40,
-		ToolResultPercent: 0,
-		ReservePercent:    0,
-	}
-
-	_, err := NewBudget(10000, invalidAllocation)
-	if err == nil {
-		t.Error("Expected error for invalid budget allocation")
 	}
 }
 

@@ -165,12 +165,11 @@ func Wire(cfg BootstrapConfig) (*Application, error) {
 
 	registerSkillCommands(skillLoader.List())
 
-	ctxManager := agentctx.NewManager(agentctx.ManagerConfig{
-		MaxTokens:           config.Context.Window,
-		ReserveTokens:       config.Context.ReserveTokens,
-		CompactionThreshold: config.Context.CompactionThreshold,
-		MaxHistoryRounds:    config.Context.MaxHistoryRounds,
-	})
+	managerCfg := agentctx.DefaultManagerConfig()
+	managerCfg.ContextWindow = config.Context.Window
+	managerCfg.ReserveTokens = config.Context.ReserveTokens
+	managerCfg.CompactionThreshold = config.Context.CompactionThreshold
+	ctxManager := agentctx.NewManager(managerCfg)
 
 	// Build system prompt: base + skill summaries.
 	systemPrompt := buildSystemPrompt(skillLoader.List())
@@ -203,13 +202,7 @@ func Wire(cfg BootstrapConfig) (*Application, error) {
 		ctxManager.SetSystemPrompt(systemPrompt)
 	}
 
-	engineCfg := loop.EngineConfig{
-		MaxIterations:  0,
-		MaxTokens:      config.Budget.MaxTokens,
-		Temperature:    float32(config.Model.Temperature),
-		TimeoutPerTurn: time.Duration(config.Model.TimeoutSec) * time.Second,
-		SystemPrompt:   systemPrompt,
-	}
+	engineCfg := newEngineConfig(config, systemPrompt)
 	engine := loop.NewEngine(engineCfg, provider, toolRegistry)
 	engine.SetContextManager(ctxManager)
 	engine.SetTrajectoryRecorder(newTrajectoryRecorder(runtimeSession, ctxManager))
@@ -315,15 +308,17 @@ func (a *Application) SetProvider(providerName, modelName, apiKey string) error 
 		a.llmReady = true
 	}
 
-	engineCfg := loop.EngineConfig{
-		MaxIterations:  10,
-		MaxTokens:      a.Config.Budget.MaxTokens,
-		Temperature:    float32(a.Config.Model.Temperature),
-		TimeoutPerTurn: time.Duration(a.Config.Model.TimeoutSec) * time.Second,
+	systemPrompt := ""
+	if a.ctxManager != nil {
+		if msg := a.ctxManager.GetSystemPrompt(); msg != nil {
+			systemPrompt = msg.Content
+		}
 	}
+
+	engineCfg := newEngineConfig(a.Config, systemPrompt)
 	newEngine := loop.NewEngine(engineCfg, provider, a.toolRegistry)
 	if a.ctxManager != nil {
-		if err := a.ctxManager.SetTokenLimits(a.Config.Context.Window, a.Config.Context.ReserveTokens); err != nil {
+		if err := a.ctxManager.SetContextWindowLimits(a.Config.Context.Window, a.Config.Context.ReserveTokens); err != nil {
 			return fmt.Errorf("update context limits: %w", err)
 		}
 	}
@@ -395,6 +390,40 @@ func newTrajectoryRecorder(s *session.Session, cm *agentctx.Manager) *loop.Traje
 			}
 			return s.SaveSnapshot(systemPrompt, cm.GetNonSystemMessages())
 		},
+	}
+}
+
+func requestMaxTokensPtr(v *int) *int {
+	if v == nil {
+		return nil
+	}
+	copy := *v
+	return &copy
+}
+
+func requestTemperaturePtr(v *float64) *float32 {
+	if v == nil {
+		return nil
+	}
+	copy := float32(*v)
+	return &copy
+}
+
+func requestMaxIterations(v *int) int {
+	if v == nil {
+		return configs.DefaultRequestMaxIterations
+	}
+	return *v
+}
+
+func newEngineConfig(cfg *configs.Config, systemPrompt string) loop.EngineConfig {
+	return loop.EngineConfig{
+		MaxIterations:  requestMaxIterations(cfg.Request.MaxIterations),
+		ContextWindow:  cfg.Context.Window,
+		MaxTokens:      requestMaxTokensPtr(cfg.Request.MaxTokens),
+		Temperature:    requestTemperaturePtr(cfg.Request.Temperature),
+		TimeoutPerTurn: time.Duration(cfg.Model.TimeoutSec) * time.Second,
+		SystemPrompt:   systemPrompt,
 	}
 }
 
