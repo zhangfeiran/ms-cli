@@ -205,9 +205,8 @@ jobs:
             file_name="$(basename "${file}")"
             echo "Resolving GitCode release upload URL for ${file_name}..."
             upload_http_code="$(curl -sS -G -o upload-url.json -w "%{http_code}" \
-              -H "PRIVATE-TOKEN: ${GITCODE_TOKEN}" \
               --data-urlencode "file_name=${file_name}" \
-              "${api}/releases/${GH_TAG}/upload_url")"
+              "${api}/releases/${GH_TAG}/upload_url?${auth_q}")"
             if [ "${upload_http_code}" != "200" ]; then
               echo "Unexpected GitCode upload_url response: ${upload_http_code}"
               cat upload-url.json || true
@@ -227,8 +226,7 @@ jobs:
             echo "Uploading ${file_name} to GitCode release..."
             curl -sS --fail \
               -X POST \
-              -H "PRIVATE-TOKEN: ${GITCODE_TOKEN}" \
-              "${upload_url}" \
+              "${upload_url}?${auth_q}" \
               -F "file=@${file}"
           done
 
