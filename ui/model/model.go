@@ -157,7 +157,7 @@ type State struct {
 // NewState returns an initial empty state.
 func NewState(version, workDir, repoURL, modelName string, ctxMax int) State {
 	if modelName == "" {
-		modelName = "unknown"
+		modelName = "No model (/model to configure)"
 	}
 	if ctxMax == 0 {
 		ctxMax = 128000 // Default for models like gpt-4o

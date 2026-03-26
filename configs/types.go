@@ -112,7 +112,7 @@ func DefaultConfig() *Config {
 		Model: ModelConfig{
 			URL:        "https://api.openai.com/v1",
 			Provider:   "openai-completion",
-			Model:      "gpt-4o-mini",
+			Model:      "",
 			TimeoutSec: 180, // 3 minutes for longer conversations
 			Headers:    make(map[string]string),
 		},
