@@ -11,6 +11,19 @@ curl -fsSL https://raw.githubusercontent.com/vigo999/ms-cli/main/scripts/install
 ```
 
 This downloads the latest release binary to `~/.ms-cli/bin/mscli` and configures your PATH.
+The installer uses GitHub as the canonical latest-tag source, probes the matching GitHub and GitCode assets for that tag, and downloads from the faster reachable mirror.
+
+Optional overrides:
+
+```bash
+# Force one source instead of auto-probing.
+MSCLI_INSTALL_SOURCE=github curl -fsSL https://raw.githubusercontent.com/vigo999/ms-cli/main/scripts/install.sh | bash
+MSCLI_INSTALL_SOURCE=gitcode curl -fsSL https://raw.githubusercontent.com/vigo999/ms-cli/main/scripts/install.sh | bash
+
+# Override repo coordinates if your GitCode mirror uses a different owner/repo.
+# Default GitCode mirror: zwiori/ms-cli
+MSCLI_GITCODE_REPO=your-mirror/ms-cli curl -fsSL https://raw.githubusercontent.com/vigo999/ms-cli/main/scripts/install.sh | bash
+```
 
 ### Build from source
 
