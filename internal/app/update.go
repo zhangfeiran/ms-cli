@@ -14,7 +14,8 @@ import (
 )
 
 var updatePromptSelectedStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.Color("117")).
+	Foreground(lipgloss.Color("252")).
+	Background(lipgloss.Color("237")).
 	Bold(true)
 
 // updateChoice is the result of the update prompt.
