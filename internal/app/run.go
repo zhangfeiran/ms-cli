@@ -223,6 +223,18 @@ func (a *Application) replayHistory() {
 	for _, ev := range a.replayBacklog {
 		a.EventCh <- ev
 	}
+	if len(a.replayBacklog) == 0 || a.ctxManager == nil {
+		return
+	}
+	usage := a.ctxManager.TokenUsage()
+	if usage.Max <= 0 {
+		return
+	}
+	a.EventCh <- model.Event{
+		Type:    model.TokenUpdate,
+		CtxUsed: usage.Current,
+		CtxMax:  usage.Max,
+	}
 }
 
 func (a *Application) addContextMessages(msgs ...llm.Message) error {
