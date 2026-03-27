@@ -64,6 +64,7 @@ const (
 	PermissionPrompt EventType = "PermissionPrompt"
 	PermissionsView  EventType = "PermissionsView"
 	AgentThinking    EventType = "AgentThinking"
+	ContextNotice    EventType = "ContextNotice"
 	UserInput        EventType = "UserInput"
 	ToolReplay       EventType = "ToolReplay"
 	TokenUpdate      EventType = "TokenUpdate"

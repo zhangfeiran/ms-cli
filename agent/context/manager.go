@@ -231,6 +231,14 @@ func (m *Manager) TokenUsage() TokenUsage {
 	return m.usage
 }
 
+// CompactCount returns how many times compaction has run.
+func (m *Manager) CompactCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	return m.stats.CompactCount
+}
+
 // SetContextWindowLimits updates the runtime context window limits.
 func (m *Manager) SetContextWindowLimits(contextWindow, reserveTokens int) error {
 	if contextWindow <= 0 {

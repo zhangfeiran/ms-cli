@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 
+	ctxmanager "github.com/vigo999/ms-cli/agent/context"
 	"github.com/vigo999/ms-cli/integrations/llm"
 	"github.com/vigo999/ms-cli/tools"
 )
@@ -229,6 +231,55 @@ func TestRunPersistsToolResultBeforeToolRender(t *testing.T) {
 
 	requireOrder(t, log, "tool_call:read", "snapshot:tool_call:read", "ui:ToolCallStart")
 	requireOrder(t, log, "tool_result:read", "snapshot:tool_result:read", "ui:ToolRead")
+}
+
+func TestRunPersistsSnapshotBeforeContextCompactionNotice(t *testing.T) {
+	provider := &scriptedStreamProvider{
+		responses: []*llm.CompletionResponse{{
+			Content:      "ok",
+			FinishReason: llm.FinishStop,
+		}},
+	}
+	engine := NewEngine(EngineConfig{
+		MaxIterations: 1,
+		ContextWindow: 100,
+	}, provider, tools.NewRegistry())
+
+	cm := ctxmanager.NewManager(ctxmanager.ManagerConfig{
+		ContextWindow:       100,
+		ReserveTokens:       10,
+		CompactionThreshold: 0.9,
+		EnableSmartCompact:  false,
+	})
+	cm.SetSystemPrompt("system")
+	for i := 0; i < 3; i++ {
+		if err := cm.AddMessage(llm.NewUserMessage(strings.Repeat("x", 80))); err != nil {
+			t.Fatalf("preload AddMessage #%d failed: %v", i+1, err)
+		}
+	}
+	engine.SetContextManager(cm)
+
+	var log []string
+	var compactMessage string
+	engine.SetTrajectoryRecorder(newPersistenceRecorder(&log))
+
+	err := engine.RunWithContextStream(context.Background(), Task{
+		ID:          "persist-context-compaction",
+		Description: strings.Repeat("y", 40),
+	}, func(ev Event) {
+		log = append(log, "ui:"+ev.Type)
+		if ev.Type == EventContextCompacted {
+			compactMessage = ev.Message
+		}
+	})
+	if err != nil {
+		t.Fatalf("RunWithContextStream failed: %v", err)
+	}
+
+	requireOrder(t, log, "user", "snapshot:user", "ui:ContextCompacted", "ui:TaskStarted")
+	if !strings.Contains(compactMessage, "Context compacted automatically:") {
+		t.Fatalf("context compaction message = %q, want automatic compaction summary", compactMessage)
+	}
 }
 
 func TestRunPersistsToolErrorBeforeErrorRender(t *testing.T) {

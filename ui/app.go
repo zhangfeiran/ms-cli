@@ -829,6 +829,9 @@ func (a App) handleEvent(ev model.Event) (tea.Model, tea.Cmd) {
 		}
 		a.state = a.finalizeAgentMessage(content)
 
+	case model.ContextNotice:
+		a.state = a.state.WithMessage(model.Message{Kind: model.MsgAgent, Content: ev.Message})
+
 	case model.AgentReplyDelta:
 		a.state = a.state.WithThinking(false)
 		a.state = a.appendToStreamingAgent(ev.Message)

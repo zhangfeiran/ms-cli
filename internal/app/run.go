@@ -418,21 +418,22 @@ func parseBootstrapConfig(args []string) (BootstrapConfig, error) {
 }
 
 var loopEventTypeMap = map[string]model.EventType{
-	"ToolCallStart":   model.ToolCallStart,
-	"AgentReply":      model.AgentReply,
-	"AgentReplyDelta": model.AgentReplyDelta,
-	"AgentThinking":   model.AgentThinking,
-	"ToolRead":        model.ToolRead,
-	"ToolGrep":        model.ToolGrep,
-	"ToolGlob":        model.ToolGlob,
-	"ToolEdit":        model.ToolEdit,
-	"ToolWrite":       model.ToolWrite,
-	"ToolSkill":       model.ToolSkill,
-	"ToolError":       model.ToolError,
-	"CmdStarted":      model.CmdStarted,
-	"AnalysisReady":   model.AnalysisReady,
-	"TokenUpdate":     model.TokenUpdate,
-	"TaskFailed":      model.ToolError,
+	"ToolCallStart":    model.ToolCallStart,
+	"AgentReply":       model.AgentReply,
+	"AgentReplyDelta":  model.AgentReplyDelta,
+	"AgentThinking":    model.AgentThinking,
+	"ContextCompacted": model.ContextNotice,
+	"ToolRead":         model.ToolRead,
+	"ToolGrep":         model.ToolGrep,
+	"ToolGlob":         model.ToolGlob,
+	"ToolEdit":         model.ToolEdit,
+	"ToolWrite":        model.ToolWrite,
+	"ToolSkill":        model.ToolSkill,
+	"ToolError":        model.ToolError,
+	"CmdStarted":       model.CmdStarted,
+	"AnalysisReady":    model.AnalysisReady,
+	"TokenUpdate":      model.TokenUpdate,
+	"TaskFailed":       model.ToolError,
 }
 
 // convertLoopEvent maps loop.Event -> UI model.Event.

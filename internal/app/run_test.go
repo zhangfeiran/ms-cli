@@ -182,3 +182,21 @@ func TestConvertLoopEvent_UnknownWithMessageFallsBackToAgentReply(t *testing.T) 
 		t.Fatalf("convertLoopEvent message = %q, want %q", got.Message, ev.Message)
 	}
 }
+
+func TestConvertLoopEvent_ContextCompactedUsesContextNotice(t *testing.T) {
+	ev := loop.Event{
+		Type:    loop.EventContextCompacted,
+		Message: "Context compacted automatically: 80 -> 40 tokens.",
+	}
+
+	got := convertLoopEvent(ev)
+	if got == nil {
+		t.Fatal("convertLoopEvent(ContextCompacted) = nil, want non-nil")
+	}
+	if got.Type != model.ContextNotice {
+		t.Fatalf("convertLoopEvent type = %v, want %v", got.Type, model.ContextNotice)
+	}
+	if got.Message != ev.Message {
+		t.Fatalf("convertLoopEvent message = %q, want %q", got.Message, ev.Message)
+	}
+}
