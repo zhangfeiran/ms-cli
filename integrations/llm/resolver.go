@@ -149,7 +149,7 @@ func defaultBaseURL(kind ProviderKind) string {
 
 func resolvedTimeout(timeoutSec int) time.Duration {
 	if timeoutSec <= 0 {
-		return 180 * time.Second
+		return 5 * time.Minute
 	}
 	return time.Duration(timeoutSec) * time.Second
 }

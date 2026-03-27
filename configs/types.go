@@ -113,7 +113,7 @@ func DefaultConfig() *Config {
 			URL:        "https://api.openai.com/v1",
 			Provider:   "openai-completion",
 			Model:      "",
-			TimeoutSec: 180, // 3 minutes for longer conversations
+			TimeoutSec: 300, // 5 minutes for longer conversations
 			Headers:    make(map[string]string),
 		},
 		UI: UIConfig{

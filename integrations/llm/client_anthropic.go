@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const anthropicDefaultTimeout = 180 * time.Second
+const anthropicDefaultTimeout = 5 * time.Minute
 
 type anthropicClient struct {
 	name       string

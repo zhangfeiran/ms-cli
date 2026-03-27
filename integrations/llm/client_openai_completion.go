@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const openAIDefaultTimeout = 180 * time.Second
+const openAIDefaultTimeout = 5 * time.Minute
 
 type openAIClient struct {
 	name       string

@@ -714,9 +714,10 @@ func (a App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		// Reset stats for new task
 		a.state = a.state.ResetStats()
-		a.state = a.state.WithThinking(false)
+		a.state = a.clearThinking()
 		if !strings.HasPrefix(val, "/") {
 			a.state = a.state.WithMessage(model.Message{Kind: model.MsgUser, Content: val})
+			a.state = a.startWait(model.WaitModel)
 		}
 		a.input = a.input.PushHistory(val)
 		a.input = a.input.Reset()
@@ -789,8 +790,11 @@ func (a App) maybeDispatchQueuedInput() App {
 	next := a.queuedInputs[0]
 	a.queuedInputs = append([]string{}, a.queuedInputs[1:]...)
 	a.state = a.state.ResetStats()
-	a.state = a.state.WithThinking(false)
+	a.state = a.clearThinking()
 	a.state = a.state.WithMessage(model.Message{Kind: model.MsgUser, Content: next})
+	if !strings.HasPrefix(strings.TrimSpace(next), "/") {
+		a.state = a.startWait(model.WaitModel)
+	}
 	select {
 	case a.userCh <- next:
 	default:
@@ -820,13 +824,13 @@ func (a App) handleEvent(ev model.Event) (tea.Model, tea.Cmd) {
 		a.openBugDetail(ev.BugView)
 
 	case model.TaskDone:
-		a.state = a.state.WithThinking(false)
+		a.state = a.clearThinking()
 
 	case model.AgentThinking:
-		a.state = a.state.WithThinking(true)
+		a.state = a.startWait(model.WaitModel)
 
 	case model.AgentReply:
-		a.state = a.state.WithThinking(false)
+		a.state = a.clearThinking()
 		a.input = a.input.ClearSlashMode()
 		content := ev.Message
 		if ev.Train != nil && ev.Train.IsDiff {
@@ -840,23 +844,24 @@ func (a App) handleEvent(ev model.Event) (tea.Model, tea.Cmd) {
 		a.state = a.state.WithMessage(model.Message{Kind: model.MsgAgent, Content: ev.Message})
 
 	case model.AgentReplyDelta:
-		a.state = a.state.WithThinking(false)
+		a.state = a.clearThinking()
 		a.state = a.appendToStreamingAgent(ev.Message)
 
 	case model.PermissionPrompt:
-		a.state = a.state.WithThinking(false)
+		a.state = a.clearThinking()
 		a.permissionPrompt = toPermissionPromptState(ev)
 
 	case model.PermissionsView:
-		a.state = a.state.WithThinking(false)
+		a.state = a.clearThinking()
 		a.permissionsView = toPermissionsViewState(ev)
 
 	case model.ToolCallStart:
-		a.state = a.state.WithThinking(false)
+		a.state = a.startWait(model.WaitTool)
 		a.state = a.commitStreamingAgent()
 		a.state = a.state.WithMessage(a.pendingToolMessage(ev))
 
 	case model.CmdStarted:
+		a.state = a.clearThinking()
 		stats := a.state.Stats
 		stats.Commands++
 		a.state = a.state.WithStats(stats)
@@ -875,6 +880,7 @@ func (a App) handleEvent(ev model.Event) (tea.Model, tea.Cmd) {
 		// output already in the tool block
 
 	case model.ToolRead:
+		a.state = a.clearThinking()
 		stats := a.state.Stats
 		stats.FilesRead++
 		a.state = a.state.WithStats(stats)
@@ -884,6 +890,7 @@ func (a App) handleEvent(ev model.Event) (tea.Model, tea.Cmd) {
 		})
 
 	case model.ToolGrep:
+		a.state = a.clearThinking()
 		stats := a.state.Stats
 		stats.Searches++
 		a.state = a.state.WithStats(stats)
@@ -893,6 +900,7 @@ func (a App) handleEvent(ev model.Event) (tea.Model, tea.Cmd) {
 		})
 
 	case model.ToolGlob:
+		a.state = a.clearThinking()
 		stats := a.state.Stats
 		stats.Searches++
 		a.state = a.state.WithStats(stats)
@@ -902,6 +910,7 @@ func (a App) handleEvent(ev model.Event) (tea.Model, tea.Cmd) {
 		})
 
 	case model.ToolEdit:
+		a.state = a.clearThinking()
 		stats := a.state.Stats
 		stats.FilesEdited++
 		a.state = a.state.WithStats(stats)
@@ -911,6 +920,7 @@ func (a App) handleEvent(ev model.Event) (tea.Model, tea.Cmd) {
 		})
 
 	case model.ToolWrite:
+		a.state = a.clearThinking()
 		stats := a.state.Stats
 		stats.FilesEdited++
 		a.state = a.state.WithStats(stats)
@@ -920,6 +930,7 @@ func (a App) handleEvent(ev model.Event) (tea.Model, tea.Cmd) {
 		})
 
 	case model.ToolSkill:
+		a.state = a.clearThinking()
 		msg := model.Message{
 			Kind:     model.MsgTool,
 			ToolName: displayToolName(ev.ToolName),
@@ -932,6 +943,13 @@ func (a App) handleEvent(ev model.Event) (tea.Model, tea.Cmd) {
 		} else {
 			a.state = a.state.WithMessage(msg)
 		}
+
+	case model.ToolWarning:
+		a.state = a.clearThinking()
+		a.state = a.resolveToolEvent(ev, model.Message{
+			Kind: model.MsgTool, ToolName: displayToolName(ev.ToolName), ToolArgs: ev.Message,
+			Display: model.DisplayWarning, Content: ev.Message,
+		})
 
 	case model.ToolError:
 		a.state = a.clearThinking()
@@ -1921,7 +1939,23 @@ func (a App) commitStreamingAgent() model.State {
 }
 
 func (a App) clearThinking() model.State {
-	return a.state.WithThinking(false)
+	return a.state.WithThinking(false).ClearWait()
+}
+
+func (a App) startWait(kind model.WaitKind) model.State {
+	next := a.state
+	if next.WaitKind != kind || next.WaitStartedAt.IsZero() {
+		next = next.WithWait(kind, time.Now())
+	}
+	return next.WithThinking(kind == model.WaitModel)
+}
+
+func (a App) thinkingStatusText() string {
+	text := "Thinking..."
+	if a.state.WaitKind != model.WaitModel || a.state.WaitStartedAt.IsZero() {
+		return text
+	}
+	return text + " " + model.FormatWaitDuration(time.Since(a.state.WaitStartedAt))
 }
 
 func (a App) appendToLastTool(line string) model.State {
@@ -2041,6 +2075,18 @@ func finalizeToolMessage(pending model.Message, ev model.Event) model.Message {
 			Display:  model.DisplayCollapsed,
 			Content:  ev.Message,
 			Summary:  firstNonEmpty(ev.Summary, pending.Summary),
+		}
+	case model.ToolWarning:
+		toolName := pending.ToolName
+		if toolName == "" {
+			toolName = displayToolName(ev.ToolName)
+		}
+		return model.Message{
+			Kind:     model.MsgTool,
+			ToolName: toolName,
+			ToolArgs: valueOrString(pending.ToolArgs, pending.Content),
+			Display:  model.DisplayWarning,
+			Content:  ev.Message,
 		}
 	case model.ToolError:
 		toolName := pending.ToolName
@@ -2434,7 +2480,8 @@ func (a *App) updateViewport() {
 	if width < 1 {
 		width = 1
 	}
-	content := panels.RenderMessages(a.viewportRenderState(), a.thinking.View(), width, a.trainView.Active)
+	a.thinking.SetText(a.thinkingStatusText())
+	content := panels.RenderMessages(a.viewportRenderState(), a.thinking.View(), a.thinking.FrameView(), width, a.trainView.Active)
 	// Pad content so it's bottom-anchored (like CC/Codex).
 	contentLines := strings.Count(content, "\n") + 1
 	viewHeight := a.viewport.Model.Height

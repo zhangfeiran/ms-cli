@@ -214,7 +214,7 @@ func (ex *executor) run(ctx context.Context) ([]Event, error) {
 func (ex *executor) callLLM(ctx context.Context) (*llm.CompletionResponse, error) {
 	timeout := ex.engine.config.TimeoutPerTurn
 	if timeout == 0 {
-		timeout = 180 * time.Second
+		timeout = 5 * time.Minute
 	}
 
 	llmCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -238,11 +238,10 @@ func (ex *executor) callLLM(ctx context.Context) (*llm.CompletionResponse, error
 		if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) || errors.Is(llmCtx.Err(), context.Canceled) {
 			return nil, context.Canceled
 		}
-		errMsg := fmt.Sprintf("LLM error: %v", err)
 		if ctx.Err() == context.DeadlineExceeded || llmCtx.Err() == context.DeadlineExceeded {
-			errMsg = fmt.Sprintf("Request timeout (ctx: %d tokens). Try /compact.",
-				ex.engine.ctxManager.TokenUsage().Current)
+			return nil, fmt.Errorf("request timeout: %w", err)
 		}
+		errMsg := fmt.Sprintf("LLM error: %v", err)
 		ex.addEvent(NewEvent(EventTaskFailed, errMsg))
 		return nil, fmt.Errorf("LLM completion: %w", err)
 	}

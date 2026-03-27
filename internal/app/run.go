@@ -236,6 +236,13 @@ func (a *Application) runTask(description string) {
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "timeout") || strings.Contains(errMsg, "deadline") {
 			errMsg = fmt.Sprintf("%s\n\nTip: The request timed out. Try:\n  1. Run /compact to reduce context size\n  2. Start a new conversation with /clear\n  3. Increase timeout in config (model.timeout_sec)", errMsg)
+			emit(model.Event{
+				Type:     model.ToolWarning,
+				ToolName: "Engine",
+				Message:  errMsg,
+			})
+			persistSnapshot()
+			return
 		}
 		emit(model.Event{
 			Type:     model.ToolError,

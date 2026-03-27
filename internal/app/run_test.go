@@ -103,6 +103,61 @@ func TestInterruptTokenCancelsActiveTask(t *testing.T) {
 	}
 }
 
+func TestRunTaskTimeoutEmitsWarningNotError(t *testing.T) {
+	provider := &blockingStreamProvider{started: make(chan struct{})}
+	engine := loop.NewEngine(loop.EngineConfig{
+		MaxIterations:  1,
+		ContextWindow:  4096,
+		TimeoutPerTurn: 20 * time.Millisecond,
+	}, provider, tools.NewRegistry())
+
+	app := &Application{
+		Engine:   engine,
+		EventCh:  make(chan model.Event, 32),
+		llmReady: true,
+	}
+
+	done := make(chan struct{})
+	go func() {
+		app.runTask("hello")
+		close(done)
+	}()
+
+	select {
+	case <-provider.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for task to start")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for timeout handling")
+	}
+
+	deadline := time.After(500 * time.Millisecond)
+	var sawWarning bool
+	for {
+		select {
+		case ev := <-app.EventCh:
+			if ev.Type == model.ToolError && strings.Contains(strings.ToLower(ev.Message), "timeout") {
+				t.Fatalf("expected timeout to emit warning, got tool error %q", ev.Message)
+			}
+			if ev.Type == model.ToolWarning {
+				sawWarning = true
+				if !strings.Contains(strings.ToLower(ev.Message), "timeout") && !strings.Contains(strings.ToLower(ev.Message), "deadline") {
+					t.Fatalf("expected timeout warning message, got %q", ev.Message)
+				}
+			}
+		case <-deadline:
+			if !sawWarning {
+				t.Fatal("expected timeout warning event")
+			}
+			return
+		}
+	}
+}
+
 type renderOnceModel struct {
 	rendered chan struct{}
 }

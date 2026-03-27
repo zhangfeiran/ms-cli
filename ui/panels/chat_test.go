@@ -3,6 +3,7 @@ package panels
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vigo999/ms-cli/ui/model"
 )
@@ -20,7 +21,7 @@ func TestRenderMessages_ToolPendingShowsOneCallLine(t *testing.T) {
 		},
 	}
 
-	view := RenderMessages(state, "", 80, true)
+	view := RenderMessages(state, "", "", 80, true)
 	if !strings.Contains(view, "⏺ Write(none-1.md)") {
 		t.Fatalf("expected pending write call line, got:\n%s", view)
 	}
@@ -42,7 +43,7 @@ func TestRenderMessages_ToolSuccessShowsSummaryAndDetails(t *testing.T) {
 		},
 	}
 
-	view := RenderMessages(state, "", 80, true)
+	view := RenderMessages(state, "", "", 80, true)
 	if !strings.Contains(view, "⏺ Write(none.md)") {
 		t.Fatalf("expected success call line, got:\n%s", view)
 	}
@@ -67,7 +68,7 @@ func TestRenderMessages_ToolFailureShowsErrorSummaryAndDetails(t *testing.T) {
 		},
 	}
 
-	view := RenderMessages(state, "", 80, true)
+	view := RenderMessages(state, "", "", 80, true)
 	if !strings.Contains(view, "⏺ Write(none.md)") {
 		t.Fatalf("expected failure call line, got:\n%s", view)
 	}
@@ -93,11 +94,53 @@ func TestRenderMessages_ToolSummaryDedupesLeadingDetailLine(t *testing.T) {
 		},
 	}
 
-	view := RenderMessages(state, "", 80, true)
+	view := RenderMessages(state, "", "", 80, true)
 	if got, want := strings.Count(view, "showing 2-2 of 3 matches"), 1; got != want {
 		t.Fatalf("expected deduped summary count %d, got %d in view:\n%s", want, got, view)
 	}
 	if !strings.Contains(view, "a.txt:2:needle two") {
 		t.Fatalf("expected detail line after dedupe, got:\n%s", view)
+	}
+}
+
+func TestRenderMessages_ToolPendingShowsSpinnerAndTimer(t *testing.T) {
+	state := model.State{
+		Messages: []model.Message{{
+			Kind:     model.MsgTool,
+			ToolName: "Shell",
+			ToolArgs: "$ go test ./ui",
+			Summary:  "running command...",
+			Pending:  true,
+		}},
+		WaitKind:      model.WaitTool,
+		WaitStartedAt: time.Now().Add(-2 * time.Second),
+	}
+
+	view := RenderMessages(state, "", "⣷", 80, true)
+	if !strings.Contains(view, "⣷ Shell($ go test ./ui)") {
+		t.Fatalf("expected pending spinner in tool line, got:\n%s", view)
+	}
+	if !strings.Contains(view, "running command... 00:0") {
+		t.Fatalf("expected pending timer suffix, got:\n%s", view)
+	}
+}
+
+func TestRenderMessages_ToolWarningUsesWarningSummaryStyle(t *testing.T) {
+	state := model.State{
+		Messages: []model.Message{{
+			Kind:     model.MsgTool,
+			ToolName: "Engine",
+			ToolArgs: "timeout",
+			Display:  model.DisplayWarning,
+			Content:  "request timeout\nTry /compact",
+		}},
+	}
+
+	view := RenderMessages(state, "", "", 80, true)
+	if !strings.Contains(view, "⏺ Engine(timeout)") {
+		t.Fatalf("expected warning call line, got:\n%s", view)
+	}
+	if !strings.Contains(view, "⎿  request timeout") {
+		t.Fatalf("expected warning summary, got:\n%s", view)
 	}
 }
